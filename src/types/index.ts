@@ -82,3 +82,29 @@ export type EventoCalendario = {
   valor?: number;
   userId?: string;
 };
+
+export type Turno = "manha" | "tarde" | "noite";
+export type VigenciaUnidade = "semanas" | "meses";
+export type StatusRecorrencia = "ativo" | "cancelado" | "concluido";
+
+export interface ServicoRecorrente {
+  id: string;
+  user_id: string;
+  client_id: string;
+  piscina_id: string;
+  tipo_servico?: string | null;
+  dias_semana: number[];        // 0=Dom .. 6=Sáb
+  turno: Turno;
+  horario: string;              // 'HH:mm:ss' ou 'HH:mm'
+  data_inicio: string;          // 'yyyy-MM-dd'
+  vigencia_qtd: number;
+  vigencia_unidade: VigenciaUnidade;
+  data_fim: string;             // 'yyyy-MM-dd'
+  dia_vencimento: number;       // 1..31
+  cobranca_inicio: string;      // 'yyyy-MM-dd' (apenas ano/mês importam)
+  num_mensalidades: number;
+  valor_mensalidade: number;
+  status: StatusRecorrencia;
+  observacoes?: string | null;
+  created_at?: string;
+}
