@@ -1173,7 +1173,6 @@ export async function createServicoRecorrente(payload: CreateRecorrentePayload) 
       const cobrancasRows = vencimentos.map((d) => ({
         user_id: userId,
         client_id: payload.clientId,
-        servico_id: null,
         recorrencia_id: recorrenciaId,
         valor: payload.valorMensalidade,
         data_vencimento: toISODate(d),

@@ -151,7 +151,8 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
         vigenciaQtd: vigenciaQtd!,
         vigenciaUnidade,
         diaVencimento: diaVencimento!,
-        cobrancaInicio,
+        // type="month" devolve "YYYY-MM"; normaliza para data válida (1º do mês)
+        cobrancaInicio: cobrancaInicio.length === 7 ? `${cobrancaInicio}-01` : cobrancaInicio,
         numMensalidades: numMensalidades!,
         valorMensalidade: valorMensalidade!,
         observacoes: observacoes || null,
@@ -294,7 +295,7 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
             </div>
             <div>
               <Label>Início da cobrança (mês): <span className="text-red-500">*</span></Label>
-              <Input type="date" value={cobrancaInicio} onChange={(e) => setCobrancaInicio(e.target.value)} />
+              <Input type="month" value={cobrancaInicio} onChange={(e) => setCobrancaInicio(e.target.value)} />
             </div>
             <div>
               <Label>Nº de mensalidades: <span className="text-red-500">*</span></Label>
