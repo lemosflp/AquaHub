@@ -208,22 +208,33 @@ export default function Eventos() {
     const userId = authData?.user?.id ?? null;
 
     const { data, error } = await supabase
-      .from("servicos")
-      .select(`
-        id, user_id, client_id, piscina_id,
-        tipo_servico, data_agendamento, horario, status, observacoes, created_at,
-        clientes(nome, sobrenome),
-        piscinas(tamanho)
-      `)
-      .eq('user_id', userId)
-      .order("data_agendamento", { ascending: false });
+    .from("servicos")
+    .select(`
+      id, user_id, client_id, piscina_id,
+      tipo_servico, data_agendamento, horario, status, observacoes, created_at,
+      recorrencia_id,
+      clientes(nome, sobrenome),
+      piscinas(tamanho)
+    `)
+    .eq('user_id', userId)
+    .order("data_agendamento", { ascending: false });
+  
+  const seen = new Set<string>();
+  
+  const groupedData = data?.filter((servico) => {
+    if (!servico.recorrencia_id) return true;
 
+    if (seen.has(servico.recorrencia_id)) return false; 
+    
+    seen.add(servico.recorrencia_id);
+    return true;
+  });
     if (error) {
       toast({ title: "Erro ao carregar serviços", description: error.message, variant: "destructive" });
       return;
     }
 
-    const mapped: Servico[] = (data ?? []).map((s: any) => ({
+    const mapped: Servico[] = (groupedData ?? []).map((s: any) => ({
       ...s,
       cliente_nome: s.clientes ? `${s.clientes.nome} ${s.clientes.sobrenome}` : "",
       piscina_tamanho: s.piscinas?.tamanho ?? "",
