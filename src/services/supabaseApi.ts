@@ -1,5 +1,13 @@
 import { supabase } from "@/lib/supabaseClient";
-import type { Cliente, Evento } from "@/types";
+import { parseISO } from "date-fns";
+import {
+  calcularDataFim,
+  gerarOcorrencias,
+  gerarVencimentos,
+  aplicarDiaFixo,
+  toISODate,
+} from "@/lib/recorrencia";
+import type { Cliente, Evento, ServicoRecorrente } from "@/types";
 
 // helpers de auth seguros
 async function getCurrentUserId() {
@@ -1062,5 +1070,132 @@ export async function deleteAdicionalApi(id: string): Promise<void> {
     }
   } catch (err) {
     console.error("deleteAdicionalApi - erro de autenticação:", err);
+  }
+}
+
+// ===========================================================================
+// SERVIÇOS RECORRENTES
+// ===========================================================================
+
+export type CreateRecorrentePayload = {
+  clientId: string;
+  piscinaId: string;
+  tipoServico?: string | null;
+  diasSemana: number[];        // 0=Dom..6=Sáb
+  turno: "manha" | "tarde" | "noite";
+  horario: string;             // 'HH:mm'
+  dataInicio: string;          // 'yyyy-MM-dd'
+  vigenciaQtd: number;
+  vigenciaUnidade: "semanas" | "meses";
+  diaVencimento: number;       // 1..31
+  cobrancaInicio: string;      // 'yyyy-MM-dd' (mês significativo)
+  numMensalidades: number;
+  valorMensalidade: number;
+  observacoes?: string | null;
+};
+
+/**
+ * Cria a série recorrente, os atendimentos (servicos) e as mensalidades
+ * (cobrancas) de uma vez. Em caso de falha, faz rollback por recorrencia_id.
+ */
+export async function createServicoRecorrente(payload: CreateRecorrentePayload) {
+  const userId = await getCurrentUserId();
+
+  const dataInicioDate = parseISO(payload.dataInicio);
+  const dataFimDate = calcularDataFim(
+    dataInicioDate,
+    payload.vigenciaQtd,
+    payload.vigenciaUnidade
+  );
+
+  // 1) série (pai)
+  const { data: serie, error: serieError } = await supabase
+    .from("servicos_recorrentes")
+    .insert({
+      user_id: userId,
+      client_id: payload.clientId,
+      piscina_id: payload.piscinaId,
+      tipo_servico: payload.tipoServico ?? null,
+      dias_semana: payload.diasSemana,
+      turno: payload.turno,
+      horario: payload.horario,
+      data_inicio: payload.dataInicio,
+      vigencia_qtd: payload.vigenciaQtd,
+      vigencia_unidade: payload.vigenciaUnidade,
+      data_fim: toISODate(dataFimDate),
+      dia_vencimento: payload.diaVencimento,
+      cobranca_inicio: payload.cobrancaInicio,
+      num_mensalidades: payload.numMensalidades,
+      valor_mensalidade: payload.valorMensalidade,
+      status: "ativo",
+      observacoes: payload.observacoes ?? null,
+    })
+    .select("id")
+    .single();
+
+  if (serieError || !serie) {
+    throw serieError ?? new Error("Erro ao criar série recorrente");
+  }
+
+  const recorrenciaId = serie.id as string;
+
+  try {
+    // 2) atendimentos (servicos)
+    const ocorrencias = gerarOcorrencias(
+      dataInicioDate,
+      dataFimDate,
+      payload.diasSemana
+    );
+    if (ocorrencias.length > 0) {
+      const servicosRows = ocorrencias.map((d) => ({
+        user_id: userId,
+        client_id: payload.clientId,
+        piscina_id: payload.piscinaId,
+        tipo_servico: payload.tipoServico ?? null,
+        data_agendamento: toISODate(d),
+        horario: payload.horario,
+        status: "agendado",
+        recorrencia_id: recorrenciaId,
+      }));
+      const { error: servError } = await supabase
+        .from("servicos")
+        .insert(servicosRows);
+      if (servError) throw servError;
+    }
+
+    // 3) mensalidades (cobrancas)
+    const vencimentos = gerarVencimentos(
+      parseISO(payload.cobrancaInicio),
+      payload.diaVencimento,
+      payload.numMensalidades
+    );
+    if (vencimentos.length > 0) {
+      const cobrancasRows = vencimentos.map((d) => ({
+        user_id: userId,
+        client_id: payload.clientId,
+        servico_id: null,
+        recorrencia_id: recorrenciaId,
+        valor: payload.valorMensalidade,
+        data_vencimento: toISODate(d),
+        status: "pendente",
+      }));
+      const { error: cobrError } = await supabase
+        .from("cobrancas")
+        .insert(cobrancasRows);
+      if (cobrError) throw cobrError;
+    }
+
+    return {
+      recorrenciaId,
+      atendimentos: ocorrencias.length,
+      cobrancas: vencimentos.length,
+    };
+  } catch (err) {
+    // rollback manual (ordem: filhos antes do pai)
+    await supabase.from("cobrancas").delete().eq("recorrencia_id", recorrenciaId);
+    await supabase.from("servicos").delete().eq("recorrencia_id", recorrenciaId);
+    await supabase.from("servicos_recorrentes").delete().eq("id", recorrenciaId);
+    console.error("[createServicoRecorrente] rollback executado:", err);
+    throw err;
   }
 }
