@@ -1199,3 +1199,102 @@ export async function createServicoRecorrente(payload: CreateRecorrentePayload) 
     throw err;
   }
 }
+
+/** Lista as séries recorrentes do usuário (com nome do cliente). */
+export async function getServicosRecorrentes(): Promise<
+  (ServicoRecorrente & { cliente_nome?: string })[]
+> {
+  const userId = await getCurrentUserId();
+  const { data, error } = await supabase
+    .from("servicos_recorrentes")
+    .select("*, clientes(nome, sobrenome)")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("[getServicosRecorrentes]", error);
+    return [];
+  }
+
+  return (data ?? []).map((s: any) => ({
+    ...s,
+    cliente_nome: s.clientes ? `${s.clientes.nome} ${s.clientes.sobrenome}` : "",
+  }));
+}
+
+/**
+ * Altera o dia fixo de vencimento da série e recalcula as cobranças FUTURAS
+ * (data_vencimento >= hoje e status 'pendente'), preservando passadas/pagas.
+ */
+export async function updateDiaVencimentoRecorrente(
+  recorrenciaId: string,
+  novoDia: number
+) {
+  const userId = await getCurrentUserId();
+  const hojeISO = toISODate(new Date());
+
+  // 1) atualiza a série
+  const { error: serieError } = await supabase
+    .from("servicos_recorrentes")
+    .update({ dia_vencimento: novoDia })
+    .eq("id", recorrenciaId)
+    .eq("user_id", userId);
+  if (serieError) throw serieError;
+
+  // 2) cobranças futuras pendentes
+  const { data: futuras, error: fetchError } = await supabase
+    .from("cobrancas")
+    .select("id, data_vencimento")
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId)
+    .eq("status", "pendente")
+    .gte("data_vencimento", hojeISO);
+  if (fetchError) throw fetchError;
+
+  // 3) recalcula cada uma dentro do seu próprio mês
+  for (const c of futuras ?? []) {
+    const novaData = aplicarDiaFixo(parseISO(c.data_vencimento), novoDia);
+    const { error: updError } = await supabase
+      .from("cobrancas")
+      .update({ data_vencimento: toISODate(novaData) })
+      .eq("id", c.id)
+      .eq("user_id", userId);
+    if (updError) throw updError;
+  }
+
+  return { atualizadas: (futuras ?? []).length };
+}
+
+/**
+ * Cancela a série: status 'cancelado', remove atendimentos futuros não
+ * concluídos e cobranças futuras pendentes. Preserva passado e pagamentos.
+ */
+export async function cancelarServicoRecorrente(recorrenciaId: string) {
+  const userId = await getCurrentUserId();
+  const hojeISO = toISODate(new Date());
+
+  const { error: serieError } = await supabase
+    .from("servicos_recorrentes")
+    .update({ status: "cancelado" })
+    .eq("id", recorrenciaId)
+    .eq("user_id", userId);
+  if (serieError) throw serieError;
+
+  const { error: servError } = await supabase
+    .from("servicos")
+    .delete()
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId)
+    .gte("data_agendamento", hojeISO)
+    .neq("status", "concluido");
+  if (servError) throw servError;
+
+  const { error: cobrError } = await supabase
+    .from("cobrancas")
+    .delete()
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId)
+    .gte("data_vencimento", hojeISO)
+    .eq("status", "pendente");
+  if (cobrError) throw cobrError;
+}
