@@ -13,6 +13,8 @@ import { ptBR } from "date-fns/locale";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabaseClient";
+import { ServicoRecorrenteForm } from "@/components/ServicoRecorrenteForm";
+import { ServicosRecorrentesList } from "@/components/ServicosRecorrentesList";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -129,6 +131,8 @@ export default function Eventos() {
 
   // initial showForm considers both sources
   const [showForm, setShowForm] = useState(!!locationShowForm || paramShowForm);
+  const [modoCadastro, setModoCadastro] = useState<"avulso" | "recorrente">("avulso");
+  const [recorrentesRefresh, setRecorrentesRefresh] = useState(0);
   // will set editing/service selections later based on params/state
   const [editingServicoId, setEditingServicoId] = useState<string | null>(null);
   const [selectedServicoId, setSelectedServicoId] = useState<string | null>(null);
@@ -715,176 +719,204 @@ export default function Eventos() {
       {/* ------------------------------------------------------------------ */}
       {showForm && (
         <div ref={showFormRef}>
-          <Card className="mb-8 border-l-4 border-l-blue-600 shadow-lg">
-            <CardHeader className="bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
-              <CardTitle className="text-blue-900">
-                {editingServicoId ? "Editar serviço" : "Agendar serviço"}
-              </CardTitle>
-              <p className="text-xs text-blue-700 mt-1">Configure todos os detalhes do serviço</p>
-            </CardHeader>
-            <CardContent className="pt-6">
-              <form onSubmit={handleSubmit} className="space-y-6">
-                {/* Cliente + Piscina */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <Label>Cliente: <span className="text-red-500">*</span></Label>
-                    <Select value={formData.clienteId} onValueChange={handleClienteSelect} disabled={loadingClientes}>
-                      <SelectTrigger>
-                        <SelectValue placeholder={loadingClientes ? "Carregando..." : "Selecione o cliente"} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {clientes.map(c => (
-                          <SelectItem key={c.id} value={c.id}>{c.nome} {c.sobrenome}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+          {!editingServicoId && (
+            <div className="mb-4 inline-flex rounded-lg border border-blue-200 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setModoCadastro("avulso")}
+                className={`px-4 py-2 text-sm ${modoCadastro === "avulso" ? "bg-blue-600 text-white" : "bg-white text-blue-700"}`}
+              >
+                Avulso
+              </button>
+              <button
+                type="button"
+                onClick={() => setModoCadastro("recorrente")}
+                className={`px-4 py-2 text-sm ${modoCadastro === "recorrente" ? "bg-blue-600 text-white" : "bg-white text-blue-700"}`}
+              >
+                Recorrente
+              </button>
+            </div>
+          )}
+
+          {modoCadastro === "recorrente" && !editingServicoId ? (
+            <ServicoRecorrenteForm
+              onCreated={() => {
+                setRecorrentesRefresh((k) => k + 1);
+                handleCancelForm();
+              }}
+            />
+          ) : (
+            <Card className="mb-8 border-l-4 border-l-blue-600 shadow-lg">
+              <CardHeader className="bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
+                <CardTitle className="text-blue-900">
+                  {editingServicoId ? "Editar serviço" : "Agendar serviço"}
+                </CardTitle>
+                <p className="text-xs text-blue-700 mt-1">Configure todos os detalhes do serviço</p>
+              </CardHeader>
+              <CardContent className="pt-6">
+                <form onSubmit={handleSubmit} className="space-y-6">
+                  {/* Cliente + Piscina */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <Label>Cliente: <span className="text-red-500">*</span></Label>
+                      <Select value={formData.clienteId} onValueChange={handleClienteSelect} disabled={loadingClientes}>
+                        <SelectTrigger>
+                          <SelectValue placeholder={loadingClientes ? "Carregando..." : "Selecione o cliente"} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {clientes.map(c => (
+                            <SelectItem key={c.id} value={c.id}>{c.nome} {c.sobrenome}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <Label>Piscina: <span className="text-red-500">*</span></Label>
+                      <Select
+                        value={formData.piscinaId}
+                        onValueChange={v => handleInputChange("piscinaId", v)}
+                        disabled={!formData.clienteId || loadingPiscinas}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder={
+                            !formData.clienteId ? "Selecione um cliente primeiro"
+                            : loadingPiscinas ? "Carregando piscinas..."
+                            : piscinas.length === 0 ? "Nenhuma piscina cadastrada"
+                            : "Selecione a piscina"
+                          } />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {piscinas.map(p => (
+                            <SelectItem key={p.id} value={p.id}>
+                              {p.tamanho}{p.tipo ? ` — ${p.tipo}` : ""}{p.endereco ? ` (${p.endereco})` : ""}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+
+                      {piscinaAtual && (
+                        <div className="mt-2 text-xs bg-blue-50 border border-blue-200 rounded px-3 py-2 text-blue-800 space-y-0.5">
+                          {piscinaAtual.tipo && <div><strong>Tipo:</strong> {piscinaAtual.tipo}</div>}
+                          <div><strong>Tamanho:</strong> {piscinaAtual.tamanho}</div>
+                          {piscinaAtual.endereco && <div><strong>Endereço:</strong> {piscinaAtual.endereco}</div>}
+                          {piscinaAtual.observacoes && <div><strong>Obs:</strong> {piscinaAtual.observacoes}</div>}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
-                  <div>
-                    <Label>Piscina: <span className="text-red-500">*</span></Label>
-                    <Select
-                      value={formData.piscinaId}
-                      onValueChange={v => handleInputChange("piscinaId", v)}
-                      disabled={!formData.clienteId || loadingPiscinas}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder={
-                          !formData.clienteId ? "Selecione um cliente primeiro"
-                          : loadingPiscinas ? "Carregando piscinas..."
-                          : piscinas.length === 0 ? "Nenhuma piscina cadastrada"
-                          : "Selecione a piscina"
-                        } />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {piscinas.map(p => (
-                          <SelectItem key={p.id} value={p.id}>
-                            {p.tamanho}{p.tipo ? ` — ${p.tipo}` : ""}{p.endereco ? ` (${p.endereco})` : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                  {/* Tipo, Data, Horário */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <Label>Tipo de serviço: <span className="text-red-500">*</span></Label>
+                      <Input
+                        value={formData.tipoServico}
+                        onChange={e => handleInputChange("tipoServico", e.target.value)}
+                        placeholder="Ex.: Limpeza, Tratamento químico"
+                      />
+                    </div>
+                    <div>
+                      <Label>Data: <span className="text-red-500">*</span></Label>
+                      <Input
+                        type="date"
+                        value={formData.dataAgendamento}
+                        onChange={e => handleInputChange("dataAgendamento", e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <Label>Horário: <span className="text-red-500">*</span></Label>
+                      <Input
+                        type="time"
+                        value={formData.horario}
+                        onChange={e => handleInputChange("horario", e.target.value)}
+                      />
+                    </div>
+                  </div>
 
-                    {piscinaAtual && (
-                      <div className="mt-2 text-xs bg-blue-50 border border-blue-200 rounded px-3 py-2 text-blue-800 space-y-0.5">
-                        {piscinaAtual.tipo && <div><strong>Tipo:</strong> {piscinaAtual.tipo}</div>}
-                        <div><strong>Tamanho:</strong> {piscinaAtual.tamanho}</div>
-                        {piscinaAtual.endereco && <div><strong>Endereço:</strong> {piscinaAtual.endereco}</div>}
-                        {piscinaAtual.observacoes && <div><strong>Obs:</strong> {piscinaAtual.observacoes}</div>}
+                  {/* Status */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <Label>Status:</Label>
+                      <Select value={formData.status} onValueChange={v => handleInputChange("status", v)}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="agendado">Agendado</SelectItem>
+                          <SelectItem value="confirmado">Confirmado</SelectItem>
+                          <SelectItem value="concluido">Concluído</SelectItem>
+                          <SelectItem value="cancelado">Cancelado</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  {/* Financeiro — só na criação */}
+                  {!editingServicoId && (
+                    <>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div>
+                          <Label>Valor do serviço (R$): <span className="text-red-500">*</span></Label>
+                          <Input
+                            type="number" min={0} step="0.01"
+                            value={formData.valor ?? ""}
+                            onChange={e => handleInputChange("valor", e.target.value === "" ? undefined : parseFloat(e.target.value))}
+                            placeholder="Ex.: 250,00"
+                          />
+                        </div>
+                        <div>
+                          <Label>Vencimento da cobrança:</Label>
+                          <Input
+                            type="date"
+                            value={formData.dataVencimento}
+                            onChange={e => handleInputChange("dataVencimento", e.target.value)}
+                          />
+                          <p className="text-xs text-muted-foreground mt-1">Se vazio, usa a data do serviço.</p>
+                        </div>
+                        <div>
+                          <Label>Entrada (R$):</Label>
+                          <Input
+                            type="number" min={0} step="0.01"
+                            value={formData.valorEntrada ?? ""}
+                            onChange={e => handleInputChange("valorEntrada", e.target.value === "" ? undefined : parseFloat(e.target.value))}
+                            placeholder="Opcional"
+                          />
+                        </div>
                       </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <Label>Forma de pagamento: <span className="text-red-500">*</span></Label>
+                          <Input
+                            value={formData.formaPagamento}
+                            onChange={e => handleInputChange("formaPagamento", e.target.value)}
+                            placeholder="Ex.: Pix, Cartão, Dinheiro"
+                          />
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Observações */}
+                  <div>
+                    <Label>Observações:</Label>
+                    <Textarea
+                      value={formData.observacoes}
+                      onChange={e => handleInputChange("observacoes", e.target.value)}
+                      placeholder="Informações adicionais sobre o serviço"
+                    />
+                  </div>
+
+                  <div className="flex justify-center pt-4 gap-2">
+                    <Button type="submit" disabled={submitting} className="bg-primary hover:bg-primary-hover text-primary-foreground px-8">
+                      {submitting ? "Salvando..." : editingServicoId ? "Salvar alterações" : "Agendar"}
+                    </Button>
+                    {editingServicoId && (
+                      <Button type="button" variant="outline" onClick={handleCancelForm}>Cancelar</Button>
                     )}
                   </div>
-                </div>
-
-                {/* Tipo, Data, Horário */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <Label>Tipo de serviço: <span className="text-red-500">*</span></Label>
-                    <Input
-                      value={formData.tipoServico}
-                      onChange={e => handleInputChange("tipoServico", e.target.value)}
-                      placeholder="Ex.: Limpeza, Tratamento químico"
-                    />
-                  </div>
-                  <div>
-                    <Label>Data: <span className="text-red-500">*</span></Label>
-                    <Input
-                      type="date"
-                      value={formData.dataAgendamento}
-                      onChange={e => handleInputChange("dataAgendamento", e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <Label>Horário: <span className="text-red-500">*</span></Label>
-                    <Input
-                      type="time"
-                      value={formData.horario}
-                      onChange={e => handleInputChange("horario", e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                {/* Status */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <Label>Status:</Label>
-                    <Select value={formData.status} onValueChange={v => handleInputChange("status", v)}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="agendado">Agendado</SelectItem>
-                        <SelectItem value="confirmado">Confirmado</SelectItem>
-                        <SelectItem value="concluido">Concluído</SelectItem>
-                        <SelectItem value="cancelado">Cancelado</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
-                {/* Financeiro — só na criação */}
-                {!editingServicoId && (
-                  <>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <div>
-                        <Label>Valor do serviço (R$): <span className="text-red-500">*</span></Label>
-                        <Input
-                          type="number" min={0} step="0.01"
-                          value={formData.valor ?? ""}
-                          onChange={e => handleInputChange("valor", e.target.value === "" ? undefined : parseFloat(e.target.value))}
-                          placeholder="Ex.: 250,00"
-                        />
-                      </div>
-                      <div>
-                        <Label>Vencimento da cobrança:</Label>
-                        <Input
-                          type="date"
-                          value={formData.dataVencimento}
-                          onChange={e => handleInputChange("dataVencimento", e.target.value)}
-                        />
-                        <p className="text-xs text-muted-foreground mt-1">Se vazio, usa a data do serviço.</p>
-                      </div>
-                      <div>
-                        <Label>Entrada (R$):</Label>
-                        <Input
-                          type="number" min={0} step="0.01"
-                          value={formData.valorEntrada ?? ""}
-                          onChange={e => handleInputChange("valorEntrada", e.target.value === "" ? undefined : parseFloat(e.target.value))}
-                          placeholder="Opcional"
-                        />
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <Label>Forma de pagamento: <span className="text-red-500">*</span></Label>
-                        <Input
-                          value={formData.formaPagamento}
-                          onChange={e => handleInputChange("formaPagamento", e.target.value)}
-                          placeholder="Ex.: Pix, Cartão, Dinheiro"
-                        />
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                {/* Observações */}
-                <div>
-                  <Label>Observações:</Label>
-                  <Textarea
-                    value={formData.observacoes}
-                    onChange={e => handleInputChange("observacoes", e.target.value)}
-                    placeholder="Informações adicionais sobre o serviço"
-                  />
-                </div>
-
-                <div className="flex justify-center pt-4 gap-2">
-                  <Button type="submit" disabled={submitting} className="bg-primary hover:bg-primary-hover text-primary-foreground px-8">
-                    {submitting ? "Salvando..." : editingServicoId ? "Salvar alterações" : "Agendar"}
-                  </Button>
-                  {editingServicoId && (
-                    <Button type="button" variant="outline" onClick={handleCancelForm}>Cancelar</Button>
-                  )}
-                </div>
-              </form>
-            </CardContent>
-          </Card>
+                </form>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
 
@@ -1087,6 +1119,10 @@ export default function Eventos() {
       {/* ------------------------------------------------------------------ */}
       {!showForm && !pagamentoModal && (
         <div className="space-y-4">
+          <div className="mb-8">
+            <h2 className="text-lg font-bold text-slate-800 mb-3">Serviços recorrentes</h2>
+            <ServicosRecorrentesList refreshKey={recorrentesRefresh} />
+          </div>
           {filteredServicos.length === 0 ? (
             <Card className="bg-white border-blue-200">
               <CardContent className="p-12 text-center">
