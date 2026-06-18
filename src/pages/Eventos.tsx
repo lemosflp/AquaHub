@@ -615,6 +615,7 @@ export default function Eventos() {
     setEditingServicoId(null);
     setFormData(FORM_INITIAL);
     setPiscinas([]);
+    setModoCadastro("avulso");
   }
 
   function handleInputChange(field: keyof FormData, value: string | number | undefined) {
