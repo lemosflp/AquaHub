@@ -55,6 +55,8 @@ type RecorrenciaEditavel = {
   id: string;
   client_id: string;
   piscina_id: string | null;
+  cliente_nome?: string;
+  piscina_label?: string;
   tipo_servico: string | null;
   dias_semana: number[];
   turno: "manha" | "tarde" | "noite";
@@ -69,6 +71,11 @@ type RecorrenciaEditavel = {
 };
 
 type Props = { onCreated?: () => void; recorrencia?: RecorrenciaEditavel };
+
+function mergeById<T extends { id: string }>(items: T[], item: T | null | undefined) {
+  if (!item || items.some((current) => current.id === item.id)) return items;
+  return [...items, item];
+}
 
 export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
   const { toast } = useToast();
@@ -111,6 +118,8 @@ export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
   // pré-popula o form quando estamos editando uma série existente
   useEffect(() => {
     if (!recorrencia) return;
+    let cancelled = false;
+
     setClienteId(recorrencia.client_id);
     setPiscinaId(recorrencia.piscina_id ?? "");
     setTipoServico(recorrencia.tipo_servico ?? "");
@@ -128,13 +137,56 @@ export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
       const userId = auth?.user?.id ?? null;
-      const { data } = await supabase
-        .from("piscinas")
-        .select("id, tamanho, tipo, endereco")
-        .eq("client_id", recorrencia.client_id)
-        .eq("user_id", userId);
-      setPiscinas(data ?? []);
+
+      const [{ data: clienteAtual }, { data: piscinasCliente }, { data: atendimentoComPiscina }] = await Promise.all([
+        supabase
+          .from("clientes")
+          .select("id, nome, sobrenome")
+          .eq("id", recorrencia.client_id)
+          .eq("user_id", userId)
+          .maybeSingle(),
+        supabase
+          .from("piscinas")
+          .select("id, tamanho, tipo, endereco")
+          .eq("client_id", recorrencia.client_id)
+          .eq("user_id", userId),
+        recorrencia.piscina_id
+          ? Promise.resolve({ data: null })
+          : supabase
+              .from("servicos")
+              .select("piscina_id")
+              .eq("recorrencia_id", recorrencia.id)
+              .eq("user_id", userId)
+              .not("piscina_id", "is", null)
+              .limit(1)
+              .maybeSingle(),
+      ]);
+
+      if (cancelled) return;
+
+      const piscinaIdAtual = recorrencia.piscina_id ?? atendimentoComPiscina?.piscina_id ?? "";
+      let piscinasLista = piscinasCliente ?? [];
+
+      if (piscinaIdAtual && !piscinasLista.some((p) => p.id === piscinaIdAtual)) {
+        const { data: piscinaAtual } = await supabase
+          .from("piscinas")
+          .select("id, tamanho, tipo, endereco")
+          .eq("id", piscinaIdAtual)
+          .eq("user_id", userId)
+          .maybeSingle();
+
+        if (cancelled) return;
+        piscinasLista = mergeById(piscinasLista, piscinaAtual);
+      }
+
+      setClientes((prev) => mergeById(prev, clienteAtual));
+      setPiscinas(piscinasLista);
+      setPiscinaId(piscinaIdAtual);
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [recorrencia]);
 
   // carregar piscinas ao escolher cliente
@@ -284,6 +336,16 @@ export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
     }
   }
 
+  const clienteSelecionado = clientes.find((c) => c.id === clienteId);
+  const clienteLabel = clienteSelecionado
+    ? `${clienteSelecionado.nome} ${clienteSelecionado.sobrenome}`
+    : recorrencia?.cliente_nome ?? "";
+
+  const piscinaSelecionada = piscinas.find((p) => p.id === piscinaId);
+  const piscinaLabel = piscinaSelecionada
+    ? `${piscinaSelecionada.tamanho}${piscinaSelecionada.tipo ? ` - ${piscinaSelecionada.tipo}` : ""}${piscinaSelecionada.endereco ? ` (${piscinaSelecionada.endereco})` : ""}`
+    : recorrencia?.piscina_label ?? "";
+
   return (
     <Card className="mb-8 border-l-4 border-l-blue-600 shadow-lg">
       <CardHeader className="bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
@@ -303,7 +365,13 @@ export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
             <div>
               <Label>Cliente: <span className="text-red-500">*</span></Label>
               <Select value={clienteId} onValueChange={handleCliente} disabled={!!recorrencia}>
-                <SelectTrigger><SelectValue placeholder="Selecione o cliente" /></SelectTrigger>
+                <SelectTrigger>
+                  {clienteLabel ? (
+                    <span className="truncate">{clienteLabel}</span>
+                  ) : (
+                    <SelectValue placeholder={clienteId ? "Carregando cliente..." : "Selecione o cliente"} />
+                  )}
+                </SelectTrigger>
                 <SelectContent>
                   {clientes.map((c) => (
                     <SelectItem key={c.id} value={c.id}>{c.nome} {c.sobrenome}</SelectItem>
@@ -315,7 +383,11 @@ export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
               <Label>Piscina:</Label>
               <Select value={piscinaId} onValueChange={setPiscinaId} disabled={!clienteId}>
                 <SelectTrigger>
-                  <SelectValue placeholder={!clienteId ? "Selecione um cliente primeiro" : "Selecione a piscina (opcional)"} />
+                  {piscinaLabel ? (
+                    <span className="truncate">{piscinaLabel}</span>
+                  ) : (
+                    <SelectValue placeholder={!clienteId ? "Selecione um cliente primeiro" : piscinaId ? "Carregando piscina..." : "Selecione a piscina (opcional)"} />
+                  )}
                 </SelectTrigger>
                 <SelectContent>
                   {piscinas.map((p) => (

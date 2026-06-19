@@ -57,6 +57,8 @@ interface SerieRecorrente {
   id: string;
   client_id: string;
   piscina_id: string | null;
+  cliente_nome?: string;
+  piscina_label?: string;
   dias_semana: number[];
   turno: "manha" | "tarde" | "noite";
   horario: string;
@@ -763,7 +765,10 @@ export default function Eventos() {
   // ---------------------------------------------------------------------------
   // Edit
   // ---------------------------------------------------------------------------
-  async function abrirEdicaoRecorrente(recorrenciaId: string) {
+  async function abrirEdicaoRecorrente(
+    recorrenciaId: string,
+    fallback?: { clienteNome?: string; piscinaLabel?: string }
+  ) {
     const { data: authData, error: authErr } = await supabase.auth.getUser();
     if (authErr) console.error('[Eventos] abrirEdicaoRecorrente auth error:', authErr);
     const userId = authData?.user?.id ?? null;
@@ -780,7 +785,35 @@ export default function Eventos() {
       return;
     }
 
-    setEditingRecorrencia(data);
+    const [{ data: cliente }, { data: piscina }] = await Promise.all([
+      supabase
+        .from("clientes")
+        .select("nome, sobrenome")
+        .eq("id", data.client_id)
+        .eq("user_id", userId)
+        .maybeSingle(),
+      data.piscina_id
+        ? supabase
+            .from("piscinas")
+            .select("tamanho, tipo, endereco")
+            .eq("id", data.piscina_id)
+            .eq("user_id", userId)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
+    ]);
+
+    const clienteNome = cliente
+      ? `${cliente.nome} ${cliente.sobrenome}`
+      : fallback?.clienteNome;
+    const piscinaLabel = piscina
+      ? `${piscina.tamanho}${piscina.tipo ? ` - ${piscina.tipo}` : ""}${piscina.endereco ? ` (${piscina.endereco})` : ""}`
+      : fallback?.piscinaLabel;
+
+    setEditingRecorrencia({
+      ...data,
+      cliente_nome: clienteNome,
+      piscina_label: piscinaLabel,
+    });
     setModoCadastro("recorrente");
     setEditingServicoId(null);
     setSelectedServicoId(null);
@@ -793,7 +826,10 @@ export default function Eventos() {
     if (!s) return;
 
     if (s.recorrencia_id) {
-      await abrirEdicaoRecorrente(s.recorrencia_id);
+      await abrirEdicaoRecorrente(s.recorrencia_id, {
+        clienteNome: s.cliente_nome,
+        piscinaLabel: s.piscina_tamanho,
+      });
       return;
     }
 
@@ -894,7 +930,7 @@ export default function Eventos() {
     switch (status) {
       case "pago":     return "bg-green-100 text-green-800";
       case "parcial":  return "bg-yellow-100 text-yellow-800";
-      case "pendente": return "bg-red-100 text-red-800";
+      case "pendente": return "bg-orange-100 text-orange-800";
       default:         return "bg-gray-100 text-gray-700";
     }
   }

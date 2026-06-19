@@ -31,7 +31,7 @@ function getStatusBadge(item: CobrancaPagamentoItem) {
   switch (item.status) {
     case "pago": return { label: "Pago", className: "bg-green-100 text-green-800" };
     case "parcial": return { label: "Parcial", className: "bg-yellow-100 text-yellow-800" };
-    default: return { label: "Pendente", className: "bg-red-100 text-red-800" };
+    default: return { label: "Pendente", className: "bg-blue-100 text-blue-800" };
   }
 }
 
@@ -116,23 +116,24 @@ export default function Pagamentos() {
   const miniWeekLabels = ["D", "S", "T", "Q", "Q", "S", "S"];
 
   const diaCorMap = useMemo(() => {
-    const map = new Map<number, "red" | "yellow" | "green">();
+    const map = new Map<number, "red" | "yellow" | "green" | "blue">();
     filtered.forEach((c) => {
       const d = parseISO(c.dataVencimento);
       if (d.getFullYear() !== currentDate.getFullYear() || d.getMonth() !== currentDate.getMonth()) return;
       const dia = d.getDate();
-      const cor: "red" | "yellow" | "green" = c.atrasada ? "red" : c.status === "parcial" ? "yellow" : c.status === "pago" ? "green" : "red";
+      const cor: "red" | "yellow" | "green" | "blue" = c.atrasada ? "red" : c.status === "parcial" ? "yellow" : c.status === "pago" ? "green" : "blue";
       const atual = map.get(dia);
-      const prioridade = { red: 2, yellow: 1, green: 0 };
+      const prioridade = { red: 3, blue: 2, yellow: 1, green: 0 };
       if (!atual || prioridade[cor] > prioridade[atual]) map.set(dia, cor);
     });
     return map;
   }, [filtered, currentDate]);
 
-  const corHex: Record<"red" | "yellow" | "green", string> = {
+  const corHex: Record<"red" | "yellow" | "green" | "blue", string> = {
     red: "#dc2626",
     yellow: "#ca8a04",
     green: "#16a34a",
+    blue: "#2563eb"
   };
 
   return (
@@ -236,11 +237,13 @@ export default function Pagamentos() {
                           const badge = getStatusBadge(item);
                           const corPill = item.atrasada
                             ? "bg-red-600 text-white"
+                            : item.status == "pendente"
+                            ? "bg-blue-600 text-white"
                             : item.status === "pago"
                             ? "bg-green-600 text-white"
                             : item.status === "parcial"
                             ? "bg-yellow-600 text-white"
-                            : "bg-red-600 text-white";
+                            : "bg-red-600 text-white"
                           return (
                             <div
                               key={item.id}
@@ -316,7 +319,7 @@ export default function Pagamentos() {
                       >
                         <div
                           className={`w-4 h-4 rounded-full flex-shrink-0 ${
-                            item.status === "pago" ? "bg-green-600" : item.status === "parcial" ? "bg-yellow-600" : "bg-red-600"
+                            item.status === "pago" ? "bg-green-600" : item.status === "parcial" ? "bg-yellow-600" : "bg-blue-600"
                           }`}
                         />
                         <div className="flex-1 min-w-0">
@@ -399,7 +402,11 @@ export default function Pagamentos() {
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 rounded-full" style={{ backgroundColor: corHex.red }} />
-                  <span className="text-slate-700">Atrasada / pendente</span>
+                  <span className="text-slate-700">Atrasada</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: corHex.blue }} />
+                  <span className="text-slate-700">Pendente</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 rounded-full" style={{ backgroundColor: corHex.yellow }} />
