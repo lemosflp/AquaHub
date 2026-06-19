@@ -15,6 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/lib/supabaseClient";
 import {
   calcularDataFim,
+  contarMesesCobertos,
   gerarOcorrencias,
   gerarVencimentos,
 } from "@/lib/recorrencia";
@@ -33,6 +34,21 @@ const DIAS = [
   { n: 5, label: "Sex" },
   { n: 6, label: "Sáb" },
   { n: 0, label: "Dom" },
+];
+
+const MESES = [
+  { n: 1, label: "Jan" },
+  { n: 2, label: "Fev" },
+  { n: 3, label: "Mar" },
+  { n: 4, label: "Abr" },
+  { n: 5, label: "Mai" },
+  { n: 6, label: "Jun" },
+  { n: 7, label: "Jul" },
+  { n: 8, label: "Ago" },
+  { n: 9, label: "Set" },
+  { n: 10, label: "Out" },
+  { n: 11, label: "Nov" },
+  { n: 12, label: "Dez" },
 ];
 
 type Props = { onCreated?: () => void };
@@ -55,7 +71,7 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
   const [vigenciaQtd, setVigenciaQtd] = useState<number | undefined>(undefined);
   const [vigenciaUnidade, setVigenciaUnidade] = useState<"semanas" | "meses">("semanas");
   const [diaVencimento, setDiaVencimento] = useState<number | undefined>(undefined);
-  const [cobrancaInicio, setCobrancaInicio] = useState("");
+  const [cobrancaMes, setCobrancaMes] = useState<number | undefined>(undefined);
   const [numMensalidades, setNumMensalidades] = useState<number | undefined>(undefined);
   const [valorMensalidade, setValorMensalidade] = useState<number | undefined>(undefined);
   const [observacoes, setObservacoes] = useState("");
@@ -98,6 +114,33 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
     );
   }
 
+  // Nº de mensalidades sugerido a partir da vigência:
+  // - meses  => a própria duração (6 meses = 6 mensalidades)
+  // - semanas => meses-calendário cobertos entre início e fim (mín. 1)
+  const numMensalidadesSugerido = (() => {
+    if (!vigenciaQtd || vigenciaQtd <= 0) return undefined;
+    if (vigenciaUnidade === "meses") return vigenciaQtd;
+    if (!dataInicio) return undefined;
+    const ini = parseISO(dataInicio);
+    const fim = calcularDataFim(ini, vigenciaQtd, "semanas");
+    return contarMesesCobertos(ini, fim);
+  })();
+
+  // Preenche automaticamente o campo (editável) sempre que a sugestão mudar.
+  useEffect(() => {
+    setNumMensalidades(numMensalidadesSugerido);
+  }, [numMensalidadesSugerido]);
+
+  // Mês escolhido + ano derivado do início da vigência (rola p/ o próximo ano
+  // quando o mês escolhido é anterior ao mês de início). Resulta em "YYYY-MM-01".
+  const cobrancaInicio = (() => {
+    if (!cobrancaMes) return "";
+    const base = dataInicio ? parseISO(dataInicio) : new Date();
+    const anoBase = base.getFullYear();
+    const ano = cobrancaMes < base.getMonth() + 1 ? anoBase + 1 : anoBase;
+    return `${ano}-${String(cobrancaMes).padStart(2, "0")}-01`;
+  })();
+
   // prévia (calculada quando há dados suficientes)
   const previa = (() => {
     if (!dataInicio || !vigenciaQtd || diasSemana.length === 0) return null;
@@ -113,7 +156,6 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
 
   function validar(): string | null {
     if (!clienteId) return "Selecione o cliente.";
-    if (!piscinaId) return "Selecione a piscina.";
     if (diasSemana.length === 0) return "Selecione ao menos um dia da semana.";
     if (!turno) return "Selecione o turno.";
     if (!horario) return "Informe o horário.";
@@ -121,7 +163,7 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
     if (!vigenciaQtd || vigenciaQtd <= 0) return "Informe a duração da vigência.";
     if (!diaVencimento || diaVencimento < 1 || diaVencimento > 31)
       return "Informe um dia de vencimento entre 1 e 31.";
-    if (!cobrancaInicio) return "Informe o mês de início da cobrança.";
+    if (!cobrancaMes) return "Selecione o mês de início da cobrança.";
     if (!numMensalidades || numMensalidades <= 0)
       return "Informe o número de mensalidades.";
     if (valorMensalidade == null || valorMensalidade <= 0)
@@ -151,8 +193,7 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
         vigenciaQtd: vigenciaQtd!,
         vigenciaUnidade,
         diaVencimento: diaVencimento!,
-        // type="month" devolve "YYYY-MM"; normaliza para data válida (1º do mês)
-        cobrancaInicio: cobrancaInicio.length === 7 ? `${cobrancaInicio}-01` : cobrancaInicio,
+        cobrancaInicio,
         numMensalidades: numMensalidades!,
         valorMensalidade: valorMensalidade!,
         observacoes: observacoes || null,
@@ -193,10 +234,10 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
               </Select>
             </div>
             <div>
-              <Label>Piscina: <span className="text-red-500">*</span></Label>
+              <Label>Piscina:</Label>
               <Select value={piscinaId} onValueChange={setPiscinaId} disabled={!clienteId}>
                 <SelectTrigger>
-                  <SelectValue placeholder={!clienteId ? "Selecione um cliente primeiro" : "Selecione a piscina"} />
+                  <SelectValue placeholder={!clienteId ? "Selecione um cliente primeiro" : "Selecione a piscina (opcional)"} />
                 </SelectTrigger>
                 <SelectContent>
                   {piscinas.map((p) => (
@@ -295,7 +336,17 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
             </div>
             <div>
               <Label>Início da cobrança (mês): <span className="text-red-500">*</span></Label>
-              <Input type="month" value={cobrancaInicio} onChange={(e) => setCobrancaInicio(e.target.value)} />
+              <Select
+                value={cobrancaMes ? String(cobrancaMes) : ""}
+                onValueChange={(v) => setCobrancaMes(parseInt(v))}
+              >
+                <SelectTrigger><SelectValue placeholder="Selecione o mês" /></SelectTrigger>
+                <SelectContent>
+                  {MESES.map((m) => (
+                    <SelectItem key={m.n} value={String(m.n)}>{m.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <Label>Nº de mensalidades: <span className="text-red-500">*</span></Label>
@@ -303,8 +354,13 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
                 type="number" min={1}
                 value={numMensalidades ?? ""}
                 onChange={(e) => setNumMensalidades(e.target.value === "" ? undefined : parseInt(e.target.value))}
-                placeholder="Ex.: 6"
+                placeholder="Calculado pela vigência"
               />
+              {vigenciaUnidade === "semanas" && !!vigenciaQtd && !dataInicio && (
+                <p className="text-xs text-amber-600 mt-1">
+                  Informe a data de início para calcular os meses cobertos.
+                </p>
+              )}
             </div>
             <div>
               <Label>Valor da mensalidade (R$): <span className="text-red-500">*</span></Label>

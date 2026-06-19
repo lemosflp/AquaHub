@@ -57,6 +57,23 @@ export function gerarOcorrencias(
   return ocorrencias;
 }
 
+/**
+ * Quantidade de ciclos mensais completos (de 1 mês cada, contados a partir de
+ * `dataInicio`) necessários para cobrir `dataFim`. Não é "quantos meses-
+ * calendário a vigência toca" — é quantos meses de fato decorreram.
+ * Ex.: 18/06 + 3 semanas (21 dias) termina em 09/07, mas como 21 dias não
+ * fecham um mês inteiro a partir de 18/06 (que só fecha em 18/07), conta 1.
+ * Já 18/06 + 8 semanas (56 dias) termina em 13/08: fechou o 1º mês (18/07) mas
+ * não o 2º (18/08), conta 2. Sempre no mínimo 1.
+ */
+export function contarMesesCobertos(dataInicio: Date, dataFim: Date): number {
+  let n = 1;
+  while (dataFim.getTime() >= addMonths(dataInicio, n).getTime()) {
+    n++;
+  }
+  return n;
+}
+
 /** Aplica o dia fixo dentro do mês de `base`, com clamp no último dia do mês. */
 export function aplicarDiaFixo(base: Date, diaFixo: number): Date {
   const ultimoDia = getDaysInMonth(base);

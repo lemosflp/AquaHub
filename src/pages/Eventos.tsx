@@ -690,7 +690,7 @@ export default function Eventos() {
           className="bg-blue-600 hover:bg-blue-700 text-white px-6 flex items-center gap-2"
           onClick={() => {
             if (showForm && !editingServicoId) handleCancelForm();
-            else { setPagamentoModal(null); setShowForm(prev => !prev); }
+            else { setPagamentoModal(null); setSelectedServicoId(null); setShowForm(prev => !prev); }
           }}
         >
           <Plus size={18} />

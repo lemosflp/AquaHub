@@ -1079,7 +1079,7 @@ export async function deleteAdicionalApi(id: string): Promise<void> {
 
 export type CreateRecorrentePayload = {
   clientId: string;
-  piscinaId: string;
+  piscinaId?: string | null;
   tipoServico?: string | null;
   diasSemana: number[];        // 0=Dom..6=Sáb
   turno: "manha" | "tarde" | "noite";
@@ -1114,7 +1114,7 @@ export async function createServicoRecorrente(payload: CreateRecorrentePayload) 
     .insert({
       user_id: userId,
       client_id: payload.clientId,
-      piscina_id: payload.piscinaId,
+      piscina_id: payload.piscinaId || null,
       tipo_servico: payload.tipoServico ?? null,
       dias_semana: payload.diasSemana,
       turno: payload.turno,
@@ -1150,7 +1150,7 @@ export async function createServicoRecorrente(payload: CreateRecorrentePayload) 
       const servicosRows = ocorrencias.map((d) => ({
         user_id: userId,
         client_id: payload.clientId,
-        piscina_id: payload.piscinaId,
+        piscina_id: payload.piscinaId || null,
         tipo_servico: payload.tipoServico ?? null,
         data_agendamento: toISODate(d),
         horario: payload.horario,
