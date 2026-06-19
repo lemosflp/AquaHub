@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +19,7 @@ import {
   gerarOcorrencias,
   gerarVencimentos,
 } from "@/lib/recorrencia";
-import { createServicoRecorrente } from "@/services/supabaseApi";
+import { createServicoRecorrente, updateServicoRecorrente } from "@/services/supabaseApi";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
@@ -51,10 +51,28 @@ const MESES = [
   { n: 12, label: "Dez" },
 ];
 
-type Props = { onCreated?: () => void };
+type RecorrenciaEditavel = {
+  id: string;
+  client_id: string;
+  piscina_id: string | null;
+  tipo_servico: string | null;
+  dias_semana: number[];
+  turno: "manha" | "tarde" | "noite";
+  horario: string;
+  data_inicio: string;
+  vigencia_qtd: number;
+  vigencia_unidade: "semanas" | "meses";
+  dia_vencimento: number;
+  num_mensalidades: number;
+  valor_mensalidade: number;
+  observacoes: string | null;
+};
 
-export function ServicoRecorrenteForm({ onCreated }: Props) {
+type Props = { onCreated?: () => void; recorrencia?: RecorrenciaEditavel };
+
+export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
   const { toast } = useToast();
+  const touchedVigenciaRef = useRef(false);
 
   const [clientes, setClientes] = useState<ClienteOpt[]>([]);
   const [piscinas, setPiscinas] = useState<PiscinaOpt[]>([]);
@@ -89,6 +107,35 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
       setClientes(data ?? []);
     })();
   }, []);
+
+  // pré-popula o form quando estamos editando uma série existente
+  useEffect(() => {
+    if (!recorrencia) return;
+    setClienteId(recorrencia.client_id);
+    setPiscinaId(recorrencia.piscina_id ?? "");
+    setTipoServico(recorrencia.tipo_servico ?? "");
+    setDiasSemana(recorrencia.dias_semana);
+    setTurno(recorrencia.turno);
+    setHorario(recorrencia.horario.slice(0, 5));
+    setDataInicio(recorrencia.data_inicio);
+    setVigenciaQtd(recorrencia.vigencia_qtd);
+    setVigenciaUnidade(recorrencia.vigencia_unidade);
+    setDiaVencimento(recorrencia.dia_vencimento);
+    setNumMensalidades(recorrencia.num_mensalidades);
+    setValorMensalidade(Number(recorrencia.valor_mensalidade));
+    setObservacoes(recorrencia.observacoes ?? "");
+
+    (async () => {
+      const { data: auth } = await supabase.auth.getUser();
+      const userId = auth?.user?.id ?? null;
+      const { data } = await supabase
+        .from("piscinas")
+        .select("id, tamanho, tipo, endereco")
+        .eq("client_id", recorrencia.client_id)
+        .eq("user_id", userId);
+      setPiscinas(data ?? []);
+    })();
+  }, [recorrencia]);
 
   // carregar piscinas ao escolher cliente
   async function handleCliente(id: string) {
@@ -127,7 +174,10 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
   })();
 
   // Preenche automaticamente o campo (editável) sempre que a sugestão mudar.
+  // Em modo de edição, só aplica a sugestão depois que o usuário de fato
+  // alterar duração/unidade — senão sobrescreveria o valor real da série.
   useEffect(() => {
+    if (recorrencia && !touchedVigenciaRef.current) return;
     setNumMensalidades(numMensalidadesSugerido);
   }, [numMensalidadesSugerido]);
 
@@ -163,7 +213,7 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
     if (!vigenciaQtd || vigenciaQtd <= 0) return "Informe a duração da vigência.";
     if (!diaVencimento || diaVencimento < 1 || diaVencimento > 31)
       return "Informe um dia de vencimento entre 1 e 31.";
-    if (!cobrancaMes) return "Selecione o mês de início da cobrança.";
+    if (!recorrencia && !cobrancaMes) return "Selecione o mês de início da cobrança.";
     if (!numMensalidades || numMensalidades <= 0)
       return "Informe o número de mensalidades.";
     if (valorMensalidade == null || valorMensalidade <= 0)
@@ -182,29 +232,53 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
     }
     setSubmitting(true);
     try {
-      const res = await createServicoRecorrente({
-        clientId: clienteId,
-        piscinaId,
-        tipoServico: tipoServico || null,
-        diasSemana,
-        turno: turno as "manha" | "tarde" | "noite",
-        horario,
-        dataInicio,
-        vigenciaQtd: vigenciaQtd!,
-        vigenciaUnidade,
-        diaVencimento: diaVencimento!,
-        cobrancaInicio,
-        numMensalidades: numMensalidades!,
-        valorMensalidade: valorMensalidade!,
-        observacoes: observacoes || null,
-      });
-      toast({
-        title: "Serviço recorrente criado!",
-        description: `${res.atendimentos} atendimentos e ${res.cobrancas} cobranças gerados.`,
-      });
+      if (recorrencia) {
+        const res = await updateServicoRecorrente(recorrencia.id, {
+          piscinaId,
+          tipoServico: tipoServico || null,
+          diasSemana,
+          turno: turno as "manha" | "tarde" | "noite",
+          horario,
+          vigenciaQtd: vigenciaQtd!,
+          vigenciaUnidade,
+          diaVencimento: diaVencimento!,
+          numMensalidades: numMensalidades!,
+          valorMensalidade: valorMensalidade!,
+          observacoes: observacoes || null,
+        });
+        toast({
+          title: "Série recorrente atualizada!",
+          description: `${res.atendimentosGerados} atendimentos e ${res.cobrancasGeradas} cobranças futuras regeneradas.`,
+        });
+      } else {
+        const res = await createServicoRecorrente({
+          clientId: clienteId,
+          piscinaId,
+          tipoServico: tipoServico || null,
+          diasSemana,
+          turno: turno as "manha" | "tarde" | "noite",
+          horario,
+          dataInicio,
+          vigenciaQtd: vigenciaQtd!,
+          vigenciaUnidade,
+          diaVencimento: diaVencimento!,
+          cobrancaInicio,
+          numMensalidades: numMensalidades!,
+          valorMensalidade: valorMensalidade!,
+          observacoes: observacoes || null,
+        });
+        toast({
+          title: "Serviço recorrente criado!",
+          description: `${res.atendimentos} atendimentos e ${res.cobrancas} cobranças gerados.`,
+        });
+      }
       onCreated?.();
     } catch (err: any) {
-      toast({ title: "Erro ao criar", description: err.message, variant: "destructive" });
+      toast({
+        title: recorrencia ? "Erro ao salvar" : "Erro ao criar",
+        description: err.message,
+        variant: "destructive",
+      });
     } finally {
       setSubmitting(false);
     }
@@ -213,9 +287,13 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
   return (
     <Card className="mb-8 border-l-4 border-l-blue-600 shadow-lg">
       <CardHeader className="bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
-        <CardTitle className="text-blue-900">Serviço recorrente</CardTitle>
+        <CardTitle className="text-blue-900">
+          {recorrencia ? "Editar serviço recorrente" : "Serviço recorrente"}
+        </CardTitle>
         <p className="text-xs text-blue-700 mt-1">
-          Gera os atendimentos no calendário e as mensalidades automaticamente
+          {recorrencia
+            ? "Altera a série a partir de hoje. Atendimentos concluídos e cobranças pagas/vencidas são preservados."
+            : "Gera os atendimentos no calendário e as mensalidades automaticamente"}
         </p>
       </CardHeader>
       <CardContent className="pt-6">
@@ -224,7 +302,7 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <Label>Cliente: <span className="text-red-500">*</span></Label>
-              <Select value={clienteId} onValueChange={handleCliente}>
+              <Select value={clienteId} onValueChange={handleCliente} disabled={!!recorrencia}>
                 <SelectTrigger><SelectValue placeholder="Selecione o cliente" /></SelectTrigger>
                 <SelectContent>
                   {clientes.map((c) => (
@@ -300,20 +378,34 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <Label>Início: <span className="text-red-500">*</span></Label>
-              <Input type="date" value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} />
+              <Input
+                type="date"
+                value={dataInicio}
+                onChange={(e) => setDataInicio(e.target.value)}
+                disabled={!!recorrencia}
+              />
             </div>
             <div>
               <Label>Duração: <span className="text-red-500">*</span></Label>
               <Input
                 type="number" min={1}
                 value={vigenciaQtd ?? ""}
-                onChange={(e) => setVigenciaQtd(e.target.value === "" ? undefined : parseInt(e.target.value))}
+                onChange={(e) => {
+                  touchedVigenciaRef.current = true;
+                  setVigenciaQtd(e.target.value === "" ? undefined : parseInt(e.target.value));
+                }}
                 placeholder="Ex.: 8"
               />
             </div>
             <div>
               <Label>Unidade:</Label>
-              <Select value={vigenciaUnidade} onValueChange={(v) => setVigenciaUnidade(v as any)}>
+              <Select
+                value={vigenciaUnidade}
+                onValueChange={(v) => {
+                  touchedVigenciaRef.current = true;
+                  setVigenciaUnidade(v as any);
+                }}
+              >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="semanas">Semanas</SelectItem>
@@ -324,7 +416,7 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
           </div>
 
           {/* Financeiro */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className={`grid grid-cols-1 gap-4 ${recorrencia ? "md:grid-cols-3" : "md:grid-cols-4"}`}>
             <div>
               <Label>Dia de vencimento: <span className="text-red-500">*</span></Label>
               <Input
@@ -334,20 +426,22 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
                 placeholder="Ex.: 10"
               />
             </div>
-            <div>
-              <Label>Início da cobrança (mês): <span className="text-red-500">*</span></Label>
-              <Select
-                value={cobrancaMes ? String(cobrancaMes) : ""}
-                onValueChange={(v) => setCobrancaMes(parseInt(v))}
-              >
-                <SelectTrigger><SelectValue placeholder="Selecione o mês" /></SelectTrigger>
-                <SelectContent>
-                  {MESES.map((m) => (
-                    <SelectItem key={m.n} value={String(m.n)}>{m.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {!recorrencia && (
+              <div>
+                <Label>Início da cobrança (mês): <span className="text-red-500">*</span></Label>
+                <Select
+                  value={cobrancaMes ? String(cobrancaMes) : ""}
+                  onValueChange={(v) => setCobrancaMes(parseInt(v))}
+                >
+                  <SelectTrigger><SelectValue placeholder="Selecione o mês" /></SelectTrigger>
+                  <SelectContent>
+                    {MESES.map((m) => (
+                      <SelectItem key={m.n} value={String(m.n)}>{m.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
               <Label>Nº de mensalidades: <span className="text-red-500">*</span></Label>
               <Input
@@ -402,7 +496,9 @@ export function ServicoRecorrenteForm({ onCreated }: Props) {
 
           <div className="flex justify-center pt-2">
             <Button type="submit" disabled={submitting} className="bg-blue-600 hover:bg-blue-700 text-white px-8">
-              {submitting ? "Criando..." : "Criar serviço recorrente"}
+              {recorrencia
+                ? submitting ? "Salvando..." : "Salvar alterações"
+                : submitting ? "Criando..." : "Criar serviço recorrente"}
             </Button>
           </div>
         </form>
