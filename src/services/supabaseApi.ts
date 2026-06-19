@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/supabaseClient";
-import { parseISO } from "date-fns";
+import { parseISO, addMonths } from "date-fns";
 import {
   calcularDataFim,
   gerarOcorrencias,
@@ -1296,4 +1296,276 @@ export async function cancelarServicoRecorrente(recorrenciaId: string) {
     .gte("data_vencimento", hojeISO)
     .eq("status", "pendente");
   if (cobrError) throw cobrError;
+}
+
+// ===========================================================================
+// PÁGINA DE PAGAMENTOS
+// ===========================================================================
+
+export type CobrancaPagamentoItem = {
+  id: string;
+  valor: number;
+  dataVencimento: string; // 'yyyy-MM-dd'
+  status: string;
+  origem: "avulso" | "recorrente";
+  clienteNome: string;
+  tipoServico: string | null;
+  atrasada: boolean;
+};
+
+/**
+ * Busca as cobranças relevantes para a página de Pagamentos: as atrasadas
+ * (pendente/parcial com vencimento no passado, sempre incluídas) e as que
+ * vencem dentro de [weekStartISO, weekEndISO]. Enriquece com nome do cliente
+ * e tipo de serviço via servico (avulso) ou servico_recorrente (recorrente).
+ */
+export async function getCobrancasPagamentos(
+  weekStartISO: string,
+  weekEndISO: string
+): Promise<CobrancaPagamentoItem[]> {
+  const userId = await getCurrentUserId();
+  const hojeISO = toISODate(new Date());
+
+  const baseSelect = "id, servico_id, recorrencia_id, valor, data_vencimento, status";
+
+  const [{ data: atrasadasData, error: atrasadasError }, { data: semanaData, error: semanaError }] =
+    await Promise.all([
+      supabase
+        .from("cobrancas")
+        .select(baseSelect)
+        .eq("user_id", userId)
+        .in("status", ["pendente", "parcial"])
+        .lt("data_vencimento", hojeISO),
+      supabase
+        .from("cobrancas")
+        .select(baseSelect)
+        .eq("user_id", userId)
+        .gte("data_vencimento", weekStartISO)
+        .lte("data_vencimento", weekEndISO),
+    ]);
+
+  if (atrasadasError) console.error("[getCobrancasPagamentos] erro atrasadas:", atrasadasError);
+  if (semanaError) console.error("[getCobrancasPagamentos] erro semana:", semanaError);
+
+  const porId = new Map<string, any>();
+  (atrasadasData ?? []).forEach((c: any) => porId.set(c.id, c));
+  (semanaData ?? []).forEach((c: any) => {
+    if (!porId.has(c.id)) porId.set(c.id, c);
+  });
+  const cobrancas = Array.from(porId.values());
+
+  const servicoIds = Array.from(new Set(cobrancas.map((c: any) => c.servico_id).filter(Boolean)));
+  const recorrenciaIds = Array.from(new Set(cobrancas.map((c: any) => c.recorrencia_id).filter(Boolean)));
+
+  const servicosMap: Record<string, any> = {};
+  if (servicoIds.length > 0) {
+    const { data } = await supabase
+      .from("servicos")
+      .select("id, client_id, tipo_servico")
+      .in("id", servicoIds);
+    (data ?? []).forEach((s: any) => { servicosMap[s.id] = s; });
+  }
+
+  const recorrenciasMap: Record<string, any> = {};
+  if (recorrenciaIds.length > 0) {
+    const { data } = await supabase
+      .from("servicos_recorrentes")
+      .select("id, client_id, tipo_servico")
+      .in("id", recorrenciaIds);
+    (data ?? []).forEach((s: any) => { recorrenciasMap[s.id] = s; });
+  }
+
+  const clienteIds = Array.from(
+    new Set([
+      ...Object.values(servicosMap).map((s: any) => s.client_id),
+      ...Object.values(recorrenciasMap).map((s: any) => s.client_id),
+    ].filter(Boolean))
+  );
+
+  const clientesMap: Record<string, any> = {};
+  if (clienteIds.length > 0) {
+    const { data } = await supabase
+      .from("clientes")
+      .select("id, nome, sobrenome")
+      .in("id", clienteIds);
+    (data ?? []).forEach((c: any) => { clientesMap[c.id] = c; });
+  }
+
+  return cobrancas.map((c: any) => {
+    const origem: "avulso" | "recorrente" = c.recorrencia_id ? "recorrente" : "avulso";
+    const pai = origem === "recorrente" ? recorrenciasMap[c.recorrencia_id] : servicosMap[c.servico_id];
+    const cliente = pai ? clientesMap[pai.client_id] : null;
+    const atrasada = (c.status === "pendente" || c.status === "parcial") && c.data_vencimento < hojeISO;
+    return {
+      id: c.id,
+      valor: c.valor,
+      dataVencimento: c.data_vencimento,
+      status: c.status ?? "pendente",
+      origem,
+      clienteNome: cliente ? `${cliente.nome} ${cliente.sobrenome}` : "",
+      tipoServico: pai?.tipo_servico ?? null,
+      atrasada,
+    };
+  });
+}
+
+export type UpdateRecorrentePayload = {
+  piscinaId?: string | null;
+  tipoServico?: string | null;
+  diasSemana: number[];
+  turno: "manha" | "tarde" | "noite";
+  horario: string;
+  vigenciaQtd: number;
+  vigenciaUnidade: "semanas" | "meses";
+  diaVencimento: number;
+  numMensalidades: number;
+  valorMensalidade: number;
+  observacoes?: string | null;
+};
+
+/**
+ * Atualiza a série recorrente preservando o passado: mantém atendimentos
+ * concluídos e cobranças pagas/vencidas intactos, e regenera somente o
+ * futuro com os novos parâmetros. data_inicio e client_id não são editáveis
+ * (o passado já foi gerado a partir deles).
+ */
+export async function updateServicoRecorrente(
+  recorrenciaId: string,
+  payload: UpdateRecorrentePayload
+) {
+  const userId = await getCurrentUserId();
+
+  const { data: serieAtual, error: serieFetchError } = await supabase
+    .from("servicos_recorrentes")
+    .select("id, client_id, data_inicio")
+    .eq("id", recorrenciaId)
+    .eq("user_id", userId)
+    .single();
+  if (serieFetchError || !serieAtual) {
+    throw serieFetchError ?? new Error("Série recorrente não encontrada");
+  }
+
+  const hoje = new Date();
+  hoje.setHours(0, 0, 0, 0);
+  const hojeISO = toISODate(hoje);
+
+  const dataInicioDate = parseISO(serieAtual.data_inicio);
+  const dataFimDate = calcularDataFim(
+    dataInicioDate,
+    payload.vigenciaQtd,
+    payload.vigenciaUnidade
+  );
+
+  // 1) atualiza a série
+  const { error: serieError } = await supabase
+    .from("servicos_recorrentes")
+    .update({
+      piscina_id: payload.piscinaId || null,
+      tipo_servico: payload.tipoServico ?? null,
+      dias_semana: payload.diasSemana,
+      turno: payload.turno,
+      horario: payload.horario,
+      vigencia_qtd: payload.vigenciaQtd,
+      vigencia_unidade: payload.vigenciaUnidade,
+      data_fim: toISODate(dataFimDate),
+      dia_vencimento: payload.diaVencimento,
+      num_mensalidades: payload.numMensalidades,
+      valor_mensalidade: payload.valorMensalidade,
+      observacoes: payload.observacoes ?? null,
+    })
+    .eq("id", recorrenciaId)
+    .eq("user_id", userId);
+  if (serieError) throw serieError;
+
+  // 2) atendimentos: remove os futuros não concluídos e regenera com os novos parâmetros
+  const { error: delServError } = await supabase
+    .from("servicos")
+    .delete()
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId)
+    .gte("data_agendamento", hojeISO)
+    .neq("status", "concluido");
+  if (delServError) throw delServError;
+
+  const inicioOcorrencias =
+    dataInicioDate.getTime() > hoje.getTime() ? dataInicioDate : hoje;
+  const ocorrencias = gerarOcorrencias(
+    inicioOcorrencias,
+    dataFimDate,
+    payload.diasSemana
+  );
+  if (ocorrencias.length > 0) {
+    const servicosRows = ocorrencias.map((d) => ({
+      user_id: userId,
+      client_id: serieAtual.client_id,
+      piscina_id: payload.piscinaId || null,
+      tipo_servico: payload.tipoServico ?? null,
+      data_agendamento: toISODate(d),
+      horario: payload.horario,
+      status: "agendado",
+      recorrencia_id: recorrenciaId,
+    }));
+    const { error: insServError } = await supabase
+      .from("servicos")
+      .insert(servicosRows);
+    if (insServError) throw insServError;
+  }
+
+  // 3) cobranças: preserva pagas/vencidas, remove as pendentes futuras e
+  // regenera somente as mensalidades que ainda faltam
+  const { data: preservadas, error: presError } = await supabase
+    .from("cobrancas")
+    .select("id, data_vencimento")
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId)
+    .or(`status.neq.pendente,data_vencimento.lt.${hojeISO}`)
+    .order("data_vencimento", { ascending: true });
+  if (presError) throw presError;
+
+  const { error: delCobError } = await supabase
+    .from("cobrancas")
+    .delete()
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId)
+    .eq("status", "pendente")
+    .gte("data_vencimento", hojeISO);
+  if (delCobError) throw delCobError;
+
+  const numPreservadas = (preservadas ?? []).length;
+  const numNovas = Math.max(0, payload.numMensalidades - numPreservadas);
+
+  if (numNovas > 0) {
+    let mesInicialNovas: Date;
+    if (numPreservadas > 0) {
+      const ultima = parseISO(preservadas![numPreservadas - 1].data_vencimento);
+      mesInicialNovas = addMonths(ultima, 1);
+    } else {
+      const candidataEsteMes = aplicarDiaFixo(hoje, payload.diaVencimento);
+      mesInicialNovas =
+        candidataEsteMes.getTime() >= hoje.getTime() ? hoje : addMonths(hoje, 1);
+    }
+
+    const vencimentos = gerarVencimentos(
+      mesInicialNovas,
+      payload.diaVencimento,
+      numNovas
+    );
+    const cobrancasRows = vencimentos.map((d) => ({
+      user_id: userId,
+      client_id: serieAtual.client_id,
+      recorrencia_id: recorrenciaId,
+      valor: payload.valorMensalidade,
+      data_vencimento: toISODate(d),
+      status: "pendente",
+    }));
+    const { error: insCobError } = await supabase
+      .from("cobrancas")
+      .insert(cobrancasRows);
+    if (insCobError) throw insCobError;
+  }
+
+  return {
+    atendimentosGerados: ocorrencias.length,
+    cobrancasGeradas: numNovas,
+  };
 }

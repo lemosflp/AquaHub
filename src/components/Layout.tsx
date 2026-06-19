@@ -10,6 +10,7 @@ import {
   LogOut,
   Menu,
   X,
+  DollarSign,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -81,6 +82,20 @@ export const Layout = ({ children }: LayoutProps) => {
           >
             <FileText size={16} />
             <span>Serviços</span>
+          </NavLink>
+
+          <NavLink
+            to="/pagamentos"
+            className={({ isActive }) =>
+              `flex items-center gap-2 rounded-md px-3 py-2 transition ${
+                isActive
+                  ? "bg-white text-blue-700 shadow-sm"
+                  : "text-blue-100 hover:bg-blue-600 hover:text-white"
+              }`
+            }
+          >
+            <DollarSign size={16} />
+            <span>Pagamentos</span>
           </NavLink>
 
           {/* <NavLink
@@ -229,6 +244,21 @@ export const Layout = ({ children }: LayoutProps) => {
               >
                 <FileText size={16} />
                 <span>Serviços</span>
+              </NavLink>
+
+              <NavLink
+                to="/pagamentos"
+                onClick={closeMobileMenu}
+                className={({ isActive }) =>
+                  `flex items-center gap-2 rounded-md px-3 py-2 transition ${
+                    isActive
+                      ? "bg-white text-blue-700 shadow-sm"
+                      : "text-blue-100 hover:bg-blue-600 hover:text-white"
+                  }`
+                }
+              >
+                <DollarSign size={16} />
+                <span>Pagamentos</span>
               </NavLink>
 
               {/* <NavLink
