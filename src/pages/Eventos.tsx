@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Search, Plus, Calendar, Clock, MapPin, Edit, CheckCircle2, Waves, DollarSign, X, CreditCard, History, RefreshCw } from "lucide-react";
+import { Search, Plus, Calendar, Clock, MapPin, Edit, CheckCircle2, Waves, DollarSign, X, CreditCard, History, RefreshCw, Trash2, Ban } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { useToast } from "@/hooks/use-toast";
@@ -181,7 +181,6 @@ export default function Eventos() {
   // --- série recorrente do serviço selecionado ---
   const [selectedSerie, setSelectedSerie] = useState<SerieRecorrente | null>(null);
   const [loadingSerie, setLoadingSerie] = useState(false);
-  // todos os atendimentos da série para exibição na timeline
   const [atendimentosSerie, setAtendimentosSerie] = useState<Servico[]>([]);
 
   // --- ui ---
@@ -204,6 +203,8 @@ export default function Eventos() {
   const showFormRef = useRef<HTMLDivElement>(null);
   const selectedRef = useRef<HTMLDivElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+
+  const hoje = new Date().toISOString().split("T")[0];
 
   // ---------------------------------------------------------------------------
   // Load clientes
@@ -259,8 +260,6 @@ export default function Eventos() {
       return;
     }
 
-    // Agrupa: mantém apenas o primeiro serviço de cada recorrencia_id.
-    // Serviços avulsos (recorrencia_id nulo) aparecem todos normalmente.
     const seen = new Set<string>();
     const groupedData = (data ?? []).filter((servico: any) => {
       if (!servico.recorrencia_id) return true;
@@ -279,7 +278,7 @@ export default function Eventos() {
   }
 
   // ---------------------------------------------------------------------------
-  // Cobrança dos detalhes — avulso: por servico_id / recorrente: por recorrencia_id
+  // Cobrança dos detalhes
   // ---------------------------------------------------------------------------
   async function fetchCobrancaDoServico(servico: Servico) {
     setSelectedCobranca(null);
@@ -288,7 +287,6 @@ export default function Eventos() {
     const userId = authData?.user?.id ?? null;
 
     if (servico.recorrencia_id) {
-      // Recorrente: busca a cobrança mais próxima (pendente ou parcial) da série
       const { data } = await supabase
         .from("cobrancas")
         .select("id, servico_id, recorrencia_id, valor, data_vencimento, status")
@@ -300,7 +298,6 @@ export default function Eventos() {
         .maybeSingle();
       setSelectedCobranca(data ?? null);
     } else {
-      // Avulso: busca diretamente pelo servico_id
       const { data } = await supabase
         .from("cobrancas")
         .select("id, servico_id, recorrencia_id, valor, data_vencimento, status")
@@ -312,7 +309,7 @@ export default function Eventos() {
   }
 
   // ---------------------------------------------------------------------------
-  // Busca a série recorrente e todos os atendimentos quando abre detalhes
+  // Busca a série recorrente e todos os atendimentos
   // ---------------------------------------------------------------------------
   async function fetchSerieRecorrente(recorrenciaId: string) {
     setLoadingSerie(true);
@@ -358,7 +355,110 @@ export default function Eventos() {
   }
 
   // ---------------------------------------------------------------------------
-  // Pagamentos: abrir modal e carregar dados
+  // Cancelar serviço (só muda status, não exclui)
+  // ---------------------------------------------------------------------------
+  async function handleCancelarServico(id: string) {
+    const { data: authData } = await supabase.auth.getUser();
+    const userId = authData?.user?.id ?? null;
+    await supabase.from("servicos").update({ status: "cancelado" }).eq("id", id).eq("user_id", userId);
+    await fetchServicos();
+    // Atualiza detalhes se o serviço estava aberto
+    const s = servicos.find(x => x.id === id);
+    if (s && selectedServicoId === id) {
+      fetchCobrancaDoServico({ ...s, status: "cancelado" });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Confirmar serviço (de cancelado → agendado)
+  // ---------------------------------------------------------------------------
+  async function handleReativarServico(id: string) {
+    const { data: authData } = await supabase.auth.getUser();
+    const userId = authData?.user?.id ?? null;
+    await supabase.from("servicos").update({ status: "agendado" }).eq("id", id).eq("user_id", userId);
+    await fetchServicos();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Excluir serviço — só disponível em casos permitidos
+  // ---------------------------------------------------------------------------
+  async function handleExcluirServico(servico: Servico) {
+    const { data: authData } = await supabase.auth.getUser();
+    const userId = authData?.user?.id ?? null;
+
+    try {
+      if (servico.recorrencia_id) {
+        // Recorrente: verifica se algum atendimento da serie ja passou
+        const { data: passados, error: passadosError } = await supabase
+          .from("servicos")
+          .select("id")
+          .eq("recorrencia_id", servico.recorrencia_id)
+          .eq("user_id", userId)
+          .lt("data_agendamento", hoje)
+          .limit(1);
+
+        if (passadosError) throw passadosError;
+
+        if (passados && passados.length > 0) {
+          toast({
+            title: "Exclusao nao permitida",
+            description: "Esta serie ja possui atendimentos realizados no passado e nao pode ser excluida.",
+            variant: "destructive",
+          });
+          return;
+        }
+      } else {
+        const { data: cobrancas, error: cobrancasError } = await supabase
+          .from("cobrancas")
+          .select("id")
+          .eq("servico_id", servico.id)
+          .eq("user_id", userId);
+
+        if (cobrancasError) throw cobrancasError;
+
+        const cobrancaIds = (cobrancas ?? []).map(c => c.id);
+
+        if (cobrancaIds.length > 0) {
+          const { error: pagamentosError } = await supabase
+            .from("pagamentos")
+            .delete()
+            .in("cobranca_id", cobrancaIds)
+            .eq("user_id", userId);
+
+          if (pagamentosError) throw pagamentosError;
+
+          const { error: deleteCobrancasError } = await supabase
+            .from("cobrancas")
+            .delete()
+            .in("id", cobrancaIds)
+            .eq("user_id", userId);
+
+          if (deleteCobrancasError) throw deleteCobrancasError;
+        }
+      }
+
+      const { error: deleteServicoError } = await supabase
+        .from("servicos")
+        .delete()
+        .eq("id", servico.id)
+        .eq("user_id", userId);
+
+      if (deleteServicoError) throw deleteServicoError;
+
+      await fetchServicos();
+      setSelectedServicoId(null);
+      setSelectedCobranca(null);
+      toast({ title: "Servico excluido." });
+    } catch (err: any) {
+      toast({
+        title: "Erro ao excluir servico",
+        description: err.message,
+        variant: "destructive",
+      });
+    }
+  }
+  // ---------------------------------------------------------------------------
+  // Pagamentos: abrir modal
   // ---------------------------------------------------------------------------
   async function abrirPagamentos(servicoId: string, clienteNome: string, recorrenciaId?: string | null) {
     setPagamentoModal({ servicoId, clienteNome, cobranca: null, pagamentos: [], loading: true });
@@ -371,7 +471,6 @@ export default function Eventos() {
     let cobrancaData: Cobranca | null = null;
 
     if (recorrenciaId) {
-      // Recorrente: pega a cobrança mais próxima pendente/parcial
       const { data } = await supabase
         .from("cobrancas")
         .select("id, servico_id, recorrencia_id, valor, data_vencimento, status")
@@ -770,6 +869,11 @@ export default function Eventos() {
     return v.toLocaleString("pt-BR", { minimumFractionDigits: 2 });
   }
 
+  // Verifica se a série recorrente tem atendimentos passados (para bloquear exclusão)
+  function serieTemPassados(): boolean {
+    return atendimentosSerie.some(at => (at.data_agendamento ?? "") < hoje);
+  }
+
   const totalPago = pagamentoModal?.pagamentos.reduce((s, p) => s + (p.valor_pago ?? 0), 0) ?? 0;
   const saldoDevedor = (pagamentoModal?.cobranca?.valor ?? 0) - totalPago;
   const cobrancaQuitada = !!pagamentoModal?.cobranca && saldoDevedor <= 0.001;
@@ -781,8 +885,6 @@ export default function Eventos() {
   useEffect(() => {
     if (selectedServico) setTimeout(() => selectedRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
   }, [selectedServico]);
-
-  const hoje = new Date().toISOString().split("T")[0];
 
   // ---------------------------------------------------------------------------
   // Render
@@ -1207,17 +1309,29 @@ export default function Eventos() {
             </Card>
           ) : (
             <div className="space-y-3">
-              {filteredServicos.map(servico => (
+              {filteredServicos.map(servico => {
+                const isCancelado = servico.status === "cancelado";
+
+                return (
                 <Card
                   key={servico.id}
-                  className="bg-white border-blue-200 hover:shadow-lg hover:border-blue-400 transition-all cursor-pointer"
+                  className={`relative overflow-hidden transition-all cursor-pointer border shadow-sm ${
+                    isCancelado
+                      ? "bg-white border-red-300 hover:border-red-400 hover:shadow-md"
+                      : "bg-white border-blue-200 hover:border-blue-400 hover:shadow-lg"
+                  }`}
                   onClick={() => { abrirDetalhes(servico); }}
                 >
+                  {isCancelado && (
+                    <div className="absolute inset-y-0 left-0 w-1 bg-red-500" />
+                  )}
                   <CardContent className="p-4">
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1 space-y-3">
                         <div className="flex items-center gap-3 flex-wrap">
-                          <h3 className="font-bold text-lg text-blue-900">{servico.cliente_nome}</h3>
+                          <h3 className={`font-bold text-lg ${isCancelado ? "text-red-900" : "text-blue-900"}`}>
+                            {servico.cliente_nome}
+                          </h3>
                           <Badge className={getStatusColor(servico.status)} variant="outline">
                             {servico.status ?? "pendente"}
                           </Badge>
@@ -1230,24 +1344,24 @@ export default function Eventos() {
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
-                          <div className="flex items-center gap-2 bg-slate-50 rounded px-3 py-2">
-                            <Calendar size={16} className="text-blue-600 flex-shrink-0" />
-                            <span className="text-slate-700">
+                          <div className={`flex items-center gap-2 rounded px-3 py-2 ${isCancelado ? "bg-red-50/70" : "bg-slate-50"}`}>
+                            <Calendar size={16} className={`${isCancelado ? "text-red-600" : "text-blue-600"} flex-shrink-0`} />
+                            <span className={isCancelado ? "text-slate-700" : "text-slate-700"}>
                               {servico.data_agendamento
                                 ? format(parseISO(servico.data_agendamento), "dd/MM/yyyy", { locale: ptBR })
                                 : "—"}
                             </span>
                           </div>
-                          <div className="flex items-center gap-2 bg-slate-50 rounded px-3 py-2">
-                            <Clock size={16} className="text-blue-600 flex-shrink-0" />
+                          <div className={`flex items-center gap-2 rounded px-3 py-2 ${isCancelado ? "bg-red-50/70" : "bg-slate-50"}`}>
+                            <Clock size={16} className={`${isCancelado ? "text-red-600" : "text-blue-600"} flex-shrink-0`} />
                             <span className="text-slate-700">{servico.horario ?? "—"}</span>
                           </div>
-                          <div className="flex items-center gap-2 bg-slate-50 rounded px-3 py-2">
-                            <Waves size={16} className="text-blue-600 flex-shrink-0" />
+                          <div className={`flex items-center gap-2 rounded px-3 py-2 ${isCancelado ? "bg-red-50/70" : "bg-slate-50"}`}>
+                            <Waves size={16} className={`${isCancelado ? "text-red-600" : "text-blue-600"} flex-shrink-0`} />
                             <span className="text-slate-700">{servico.piscina_tamanho ?? "—"}</span>
                           </div>
-                          <div className="flex items-center gap-2 bg-slate-50 rounded px-3 py-2">
-                            <MapPin size={16} className="text-blue-600 flex-shrink-0" />
+                          <div className={`flex items-center gap-2 rounded px-3 py-2 ${isCancelado ? "bg-red-50/70" : "bg-slate-50"}`}>
+                            <MapPin size={16} className={`${isCancelado ? "text-red-600" : "text-blue-600"} flex-shrink-0`} />
                             <span className="text-slate-700">{servico.tipo_servico ?? "—"}</span>
                           </div>
                         </div>
@@ -1262,6 +1376,7 @@ export default function Eventos() {
                       </div>
 
                       <div className="flex flex-col gap-2 ml-2">
+                        {/* Confirmar — só quando agendado */}
                         {servico.status === "agendado" && (
                           <Button
                             size="sm"
@@ -1278,6 +1393,22 @@ export default function Eventos() {
                             Confirmar
                           </Button>
                         )}
+
+                        {/* Reativar — só quando cancelado */}
+                        {servico.status === "cancelado" && (
+                          <Button
+                            size="sm"
+                            className="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 whitespace-nowrap"
+                            onClick={async e => {
+                              e.stopPropagation();
+                              await handleReativarServico(servico.id);
+                            }}
+                          >
+                            <CheckCircle2 size={14} className="mr-1" />
+                            Reativar
+                          </Button>
+                        )}
+
                         <Button
                           size="sm"
                           variant="outline"
@@ -1287,20 +1418,25 @@ export default function Eventos() {
                           <Edit size={14} className="mr-1" />
                           Detalhes
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="border-emerald-300 text-emerald-700 hover:bg-emerald-50 text-xs px-3"
-                          onClick={e => { e.stopPropagation(); setSelectedServicoId(null); abrirPagamentos(servico.id, servico.cliente_nome ?? "", servico.recorrencia_id); }}
-                        >
-                          <DollarSign size={14} className="mr-1" />
-                          Pagamentos
-                        </Button>
+
+                        {/* Pagamentos — apenas não cancelados */}
+                        {servico.status !== "cancelado" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="border-emerald-300 text-emerald-700 hover:bg-emerald-50 text-xs px-3"
+                            onClick={e => { e.stopPropagation(); setSelectedServicoId(null); abrirPagamentos(servico.id, servico.cliente_nome ?? "", servico.recorrencia_id); }}
+                          >
+                            <DollarSign size={14} className="mr-1" />
+                            Pagamentos
+                          </Button>
+                        )}
                       </div>
                     </div>
                   </CardContent>
                 </Card>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -1312,7 +1448,7 @@ export default function Eventos() {
       {selectedServico && !pagamentoModal && (
         <div ref={selectedRef}>
           <section className="mt-6">
-            <Card className="border-l-4 border-l-blue-600 shadow-lg">
+            <Card className={`shadow-lg border-l-4 ${selectedServico.status === "cancelado" ? "border-l-red-400" : "border-l-blue-600"}`}>
               <CardHeader className="bg-gradient-to-r from-blue-50 to-white border-b border-blue-200">
                 <div className="flex items-center justify-between">
                   <div>
@@ -1342,8 +1478,15 @@ export default function Eventos() {
               </CardHeader>
 
               <CardContent className="space-y-6 pt-4 text-sm">
+                {/* Aviso visual quando cancelado */}
+                {selectedServico.status === "cancelado" && (
+                  <div className="rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-800 flex items-center gap-2">
+                    <Ban size={16} />
+                    Este serviço está cancelado. Reative-o caso queira retomar o agendamento.
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* Dados do serviço */}
                   <div className="rounded-lg border bg-slate-50/60 p-3 space-y-2">
                     <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Serviço</h3>
                     <div><span className="font-medium">Tipo:</span> {selectedServico.tipo_servico ?? "—"}</div>
@@ -1353,7 +1496,6 @@ export default function Eventos() {
                     )}
                   </div>
 
-                  {/* Dados financeiros */}
                   <div className="rounded-lg border bg-slate-50/60 p-3 space-y-2">
                     <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Financeiro</h3>
                     {selectedCobranca ? (
@@ -1391,9 +1533,7 @@ export default function Eventos() {
                   </div>
                 </div>
 
-                {/* -------------------------------------------------------- */}
-                {/* Painel de recorrência                                     */}
-                {/* -------------------------------------------------------- */}
+                {/* Painel de recorrência */}
                 {selectedServico.recorrencia_id && (
                   <div className="rounded-lg border border-purple-200 bg-purple-50/40 p-4 space-y-4">
                     <h3 className="text-sm font-semibold flex items-center gap-2 text-purple-800">
@@ -1405,7 +1545,6 @@ export default function Eventos() {
                       <div className="text-xs text-muted-foreground">Carregando série...</div>
                     ) : selectedSerie ? (
                       <>
-                        {/* Resumo da série */}
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                           <div className="rounded-md bg-white border border-purple-100 p-3 text-center">
                             <p className="text-xs text-muted-foreground mb-1">Dias da semana</p>
@@ -1448,7 +1587,6 @@ export default function Eventos() {
                           </div>
                         </div>
 
-                        {/* Timeline de atendimentos */}
                         <div>
                           <p className="text-xs font-semibold text-purple-700 mb-2 uppercase tracking-wide">
                             Atendimentos da série ({atendimentosSerie.length} total)
@@ -1475,10 +1613,7 @@ export default function Eventos() {
                                       : "—"}
                                   </span>
                                   <span className="text-slate-500 w-12 shrink-0">{at.horario?.slice(0, 5) ?? "—"}</span>
-                                  <Badge
-                                    className={`text-[10px] px-1.5 py-0 ${getStatusColor(at.status)}`}
-                                    variant="outline"
-                                  >
+                                  <Badge className={`text-[10px] px-1.5 py-0 ${getStatusColor(at.status)}`} variant="outline">
                                     {at.status ?? "—"}
                                   </Badge>
                                   {isToday && <span className="ml-auto text-blue-600 font-semibold">Hoje</span>}
@@ -1495,22 +1630,28 @@ export default function Eventos() {
                   </div>
                 )}
 
+                {/* Botões de ação */}
                 <div className="mt-2 flex flex-wrap gap-2 justify-end">
                   <Button type="button" variant="outline" onClick={() => setSelectedServicoId(null)}>
                     Voltar
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-                    onClick={() => {
-                      setSelectedServicoId(null);
-                      abrirPagamentos(selectedServico.id, selectedServico.cliente_nome ?? "", selectedServico.recorrencia_id);
-                    }}
-                  >
-                    <DollarSign size={16} className="mr-1" />
-                    Ver pagamentos
-                  </Button>
+
+                  {/* Ver pagamentos — só para não cancelados */}
+                  {selectedServico.status !== "cancelado" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                      onClick={() => {
+                        setSelectedServicoId(null);
+                        abrirPagamentos(selectedServico.id, selectedServico.cliente_nome ?? "", selectedServico.recorrencia_id);
+                      }}
+                    >
+                      <DollarSign size={16} className="mr-1" />
+                      Ver pagamentos
+                    </Button>
+                  )}
+
                   <Button
                     type="button"
                     className="bg-blue-600 hover:bg-blue-700 text-white"
@@ -1518,6 +1659,8 @@ export default function Eventos() {
                   >
                     Editar
                   </Button>
+
+                  {/* Confirmar — apenas agendado */}
                   {selectedServico.status === "agendado" && (
                     <Button
                       type="button"
@@ -1534,19 +1677,55 @@ export default function Eventos() {
                       Confirmar serviço
                     </Button>
                   )}
-                  <Button
-                    type="button"
-                    className="bg-red-600 hover:bg-red-700 text-white"
-                    onClick={async () => {
-                      const { data: authData } = await supabase.auth.getUser();
-                      const userId = authData?.user?.id ?? null;
-                      await supabase.from("servicos").delete().eq("id", selectedServico.id).eq("user_id", userId);
-                      await fetchServicos();
-                      setSelectedServicoId(null);
-                    }}
-                  >
-                    Remover
-                  </Button>
+
+                  {/* Reativar — apenas cancelado */}
+                  {selectedServico.status === "cancelado" && (
+                    <Button
+                      type="button"
+                      className="bg-blue-600 hover:bg-blue-700 text-white"
+                      onClick={async () => {
+                        await handleReativarServico(selectedServico.id);
+                        setSelectedServicoId(null);
+                      }}
+                    >
+                      <CheckCircle2 size={16} className="mr-1" />
+                      Reativar serviço
+                    </Button>
+                  )}
+
+                  {/* Cancelar — apenas quando não está cancelado */}
+                  {selectedServico.status !== "cancelado" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="border-orange-300 text-orange-700 hover:bg-orange-50"
+                      onClick={() => handleCancelarServico(selectedServico.id)}
+                    >
+                      <Ban size={16} className="mr-1" />
+                      Cancelar
+                    </Button>
+                  )}
+
+                  {/* Excluir — apenas cancelado + regras de recorrente */}
+                  {selectedServico.status === "cancelado" && (
+                    <>
+                      {selectedServico.recorrencia_id && serieTemPassados() ? (
+                        <Button type="button" disabled className="opacity-40 cursor-not-allowed bg-red-100 text-red-400 border border-red-200" title="Série com atendimentos passados não pode ser excluída">
+                          <Trash2 size={16} className="mr-1" />
+                          Excluir
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          className="bg-red-600 hover:bg-red-700 text-white"
+                          onClick={() => handleExcluirServico(selectedServico)}
+                        >
+                          <Trash2 size={16} className="mr-1" />
+                          Excluir
+                        </Button>
+                      )}
+                    </>
+                  )}
                 </div>
               </CardContent>
             </Card>
