@@ -55,13 +55,15 @@ interface Servico {
 
 interface SerieRecorrente {
   id: string;
+  client_id: string;
+  piscina_id: string | null;
   dias_semana: number[];
-  turno: string;
+  turno: "manha" | "tarde" | "noite";
   horario: string;
   data_inicio: string;
   data_fim: string;
   vigencia_qtd: number;
-  vigencia_unidade: string;
+  vigencia_unidade: "semanas" | "meses";
   dia_vencimento: number;
   num_mensalidades: number;
   valor_mensalidade: number;
@@ -167,6 +169,7 @@ export default function Eventos() {
   const [modoCadastro, setModoCadastro] = useState<"avulso" | "recorrente">("avulso");
   const [recorrentesRefresh, setRecorrentesRefresh] = useState(0);
   const [editingServicoId, setEditingServicoId] = useState<string | null>(null);
+  const [editingRecorrencia, setEditingRecorrencia] = useState<SerieRecorrente | null>(null);
   const [selectedServicoId, setSelectedServicoId] = useState<string | null>(null);
   const [formData, setFormData] = useState<FormData>(FORM_INITIAL);
 
@@ -321,7 +324,7 @@ export default function Eventos() {
 
     const { data: serieData } = await supabase
       .from("servicos_recorrentes")
-      .select("id, dias_semana, turno, horario, data_inicio, data_fim, vigencia_qtd, vigencia_unidade, dia_vencimento, num_mensalidades, valor_mensalidade, status, tipo_servico, observacoes")
+      .select("id, client_id, piscina_id, dias_semana, turno, horario, data_inicio, data_fim, vigencia_qtd, vigencia_unidade, dia_vencimento, num_mensalidades, valor_mensalidade, status, tipo_servico, observacoes")
       .eq("id", recorrenciaId)
       .eq("user_id", userId)
       .maybeSingle();
@@ -760,9 +763,39 @@ export default function Eventos() {
   // ---------------------------------------------------------------------------
   // Edit
   // ---------------------------------------------------------------------------
+  async function abrirEdicaoRecorrente(recorrenciaId: string) {
+    const { data: authData, error: authErr } = await supabase.auth.getUser();
+    if (authErr) console.error('[Eventos] abrirEdicaoRecorrente auth error:', authErr);
+    const userId = authData?.user?.id ?? null;
+
+    const { data } = await supabase
+      .from("servicos_recorrentes")
+      .select("id, client_id, piscina_id, dias_semana, turno, horario, data_inicio, data_fim, vigencia_qtd, vigencia_unidade, dia_vencimento, num_mensalidades, valor_mensalidade, status, tipo_servico, observacoes")
+      .eq("id", recorrenciaId)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (!data) {
+      toast({ title: "Não foi possível carregar a série recorrente.", variant: "destructive" });
+      return;
+    }
+
+    setEditingRecorrencia(data);
+    setModoCadastro("recorrente");
+    setEditingServicoId(null);
+    setSelectedServicoId(null);
+    setPagamentoModal(null);
+    setShowForm(true);
+  }
+
   async function handleEditServico(id: string) {
     const s = servicos.find(x => x.id === id);
     if (!s) return;
+
+    if (s.recorrencia_id) {
+      await abrirEdicaoRecorrente(s.recorrencia_id);
+      return;
+    }
 
     setLoadingPiscinas(true);
     const { data: authData, error: authErr } = await supabase.auth.getUser();
@@ -822,6 +855,7 @@ export default function Eventos() {
   function handleCancelForm() {
     setShowForm(false);
     setEditingServicoId(null);
+    setEditingRecorrencia(null);
     setFormData(FORM_INITIAL);
     setPiscinas([]);
     setModoCadastro("avulso");
@@ -932,7 +966,7 @@ export default function Eventos() {
       {/* ------------------------------------------------------------------ */}
       {showForm && (
         <div ref={showFormRef}>
-          {!editingServicoId && (
+          {!editingServicoId && !editingRecorrencia && (
             <div className="mb-4 inline-flex rounded-lg border border-blue-200 overflow-hidden">
               <button
                 type="button"
@@ -953,6 +987,7 @@ export default function Eventos() {
 
           {modoCadastro === "recorrente" && !editingServicoId ? (
             <ServicoRecorrenteForm
+              recorrencia={editingRecorrencia ?? undefined}
               onCreated={() => {
                 setRecorrentesRefresh((k) => k + 1);
                 handleCancelForm();
