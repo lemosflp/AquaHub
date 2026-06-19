@@ -1297,3 +1297,114 @@ export async function cancelarServicoRecorrente(recorrenciaId: string) {
     .eq("status", "pendente");
   if (cobrError) throw cobrError;
 }
+
+// ===========================================================================
+// PÁGINA DE PAGAMENTOS
+// ===========================================================================
+
+export type CobrancaPagamentoItem = {
+  id: string;
+  valor: number;
+  dataVencimento: string; // 'yyyy-MM-dd'
+  status: string;
+  origem: "avulso" | "recorrente";
+  clienteNome: string;
+  tipoServico: string | null;
+  atrasada: boolean;
+};
+
+/**
+ * Busca as cobranças relevantes para a página de Pagamentos: as atrasadas
+ * (pendente/parcial com vencimento no passado, sempre incluídas) e as que
+ * vencem dentro de [weekStartISO, weekEndISO]. Enriquece com nome do cliente
+ * e tipo de serviço via servico (avulso) ou servico_recorrente (recorrente).
+ */
+export async function getCobrancasPagamentos(
+  weekStartISO: string,
+  weekEndISO: string
+): Promise<CobrancaPagamentoItem[]> {
+  const userId = await getCurrentUserId();
+  const hojeISO = toISODate(new Date());
+
+  const baseSelect = "id, servico_id, recorrencia_id, valor, data_vencimento, status";
+
+  const [{ data: atrasadasData, error: atrasadasError }, { data: semanaData, error: semanaError }] =
+    await Promise.all([
+      supabase
+        .from("cobrancas")
+        .select(baseSelect)
+        .eq("user_id", userId)
+        .in("status", ["pendente", "parcial"])
+        .lt("data_vencimento", hojeISO),
+      supabase
+        .from("cobrancas")
+        .select(baseSelect)
+        .eq("user_id", userId)
+        .gte("data_vencimento", weekStartISO)
+        .lte("data_vencimento", weekEndISO),
+    ]);
+
+  if (atrasadasError) console.error("[getCobrancasPagamentos] erro atrasadas:", atrasadasError);
+  if (semanaError) console.error("[getCobrancasPagamentos] erro semana:", semanaError);
+
+  const porId = new Map<string, any>();
+  (atrasadasData ?? []).forEach((c: any) => porId.set(c.id, c));
+  (semanaData ?? []).forEach((c: any) => {
+    if (!porId.has(c.id)) porId.set(c.id, c);
+  });
+  const cobrancas = Array.from(porId.values());
+
+  const servicoIds = Array.from(new Set(cobrancas.map((c: any) => c.servico_id).filter(Boolean)));
+  const recorrenciaIds = Array.from(new Set(cobrancas.map((c: any) => c.recorrencia_id).filter(Boolean)));
+
+  const servicosMap: Record<string, any> = {};
+  if (servicoIds.length > 0) {
+    const { data } = await supabase
+      .from("servicos")
+      .select("id, client_id, tipo_servico")
+      .in("id", servicoIds);
+    (data ?? []).forEach((s: any) => { servicosMap[s.id] = s; });
+  }
+
+  const recorrenciasMap: Record<string, any> = {};
+  if (recorrenciaIds.length > 0) {
+    const { data } = await supabase
+      .from("servicos_recorrentes")
+      .select("id, client_id, tipo_servico")
+      .in("id", recorrenciaIds);
+    (data ?? []).forEach((s: any) => { recorrenciasMap[s.id] = s; });
+  }
+
+  const clienteIds = Array.from(
+    new Set([
+      ...Object.values(servicosMap).map((s: any) => s.client_id),
+      ...Object.values(recorrenciasMap).map((s: any) => s.client_id),
+    ].filter(Boolean))
+  );
+
+  const clientesMap: Record<string, any> = {};
+  if (clienteIds.length > 0) {
+    const { data } = await supabase
+      .from("clientes")
+      .select("id, nome, sobrenome")
+      .in("id", clienteIds);
+    (data ?? []).forEach((c: any) => { clientesMap[c.id] = c; });
+  }
+
+  return cobrancas.map((c: any) => {
+    const origem: "avulso" | "recorrente" = c.recorrencia_id ? "recorrente" : "avulso";
+    const pai = origem === "recorrente" ? recorrenciasMap[c.recorrencia_id] : servicosMap[c.servico_id];
+    const cliente = pai ? clientesMap[pai.client_id] : null;
+    const atrasada = (c.status === "pendente" || c.status === "parcial") && c.data_vencimento < hojeISO;
+    return {
+      id: c.id,
+      valor: c.valor,
+      dataVencimento: c.data_vencimento,
+      status: c.status ?? "pendente",
+      origem,
+      clienteNome: cliente ? `${cliente.nome} ${cliente.sobrenome}` : "",
+      tipoServico: pai?.tipo_servico ?? null,
+      atrasada,
+    };
+  });
+}
