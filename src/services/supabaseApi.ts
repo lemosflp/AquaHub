@@ -1,5 +1,13 @@
 import { supabase } from "@/lib/supabaseClient";
-import type { Cliente, Evento } from "@/types";
+import { parseISO } from "date-fns";
+import {
+  calcularDataFim,
+  gerarOcorrencias,
+  gerarVencimentos,
+  aplicarDiaFixo,
+  toISODate,
+} from "@/lib/recorrencia";
+import type { Cliente, Evento, ServicoRecorrente } from "@/types";
 
 // helpers de auth seguros
 async function getCurrentUserId() {
@@ -1063,4 +1071,340 @@ export async function deleteAdicionalApi(id: string): Promise<void> {
   } catch (err) {
     console.error("deleteAdicionalApi - erro de autenticação:", err);
   }
+}
+
+// ===========================================================================
+// SERVIÇOS RECORRENTES
+// ===========================================================================
+
+export type CreateRecorrentePayload = {
+  clientId: string;
+  piscinaId?: string | null;
+  tipoServico?: string | null;
+  diasSemana: number[];        // 0=Dom..6=Sáb
+  turno: "manha" | "tarde" | "noite";
+  horario: string;             // 'HH:mm'
+  dataInicio: string;          // 'yyyy-MM-dd'
+  vigenciaQtd: number;
+  vigenciaUnidade: "semanas" | "meses";
+  diaVencimento: number;       // 1..31
+  cobrancaInicio: string;      // 'yyyy-MM-dd' (mês significativo)
+  numMensalidades: number;
+  valorMensalidade: number;
+  observacoes?: string | null;
+};
+
+/**
+ * Cria a série recorrente, os atendimentos (servicos) e as mensalidades
+ * (cobrancas) de uma vez. Em caso de falha, faz rollback por recorrencia_id.
+ */
+export async function createServicoRecorrente(payload: CreateRecorrentePayload) {
+  const userId = await getCurrentUserId();
+
+  const dataInicioDate = parseISO(payload.dataInicio);
+  const dataFimDate = calcularDataFim(
+    dataInicioDate,
+    payload.vigenciaQtd,
+    payload.vigenciaUnidade
+  );
+
+  // 1) série (pai)
+  const { data: serie, error: serieError } = await supabase
+    .from("servicos_recorrentes")
+    .insert({
+      user_id: userId,
+      client_id: payload.clientId,
+      piscina_id: payload.piscinaId || null,
+      tipo_servico: payload.tipoServico ?? null,
+      dias_semana: payload.diasSemana,
+      turno: payload.turno,
+      horario: payload.horario,
+      data_inicio: payload.dataInicio,
+      vigencia_qtd: payload.vigenciaQtd,
+      vigencia_unidade: payload.vigenciaUnidade,
+      data_fim: toISODate(dataFimDate),
+      dia_vencimento: payload.diaVencimento,
+      cobranca_inicio: payload.cobrancaInicio,
+      num_mensalidades: payload.numMensalidades,
+      valor_mensalidade: payload.valorMensalidade,
+      status: "ativo",
+      observacoes: payload.observacoes ?? null,
+    })
+    .select("id")
+    .single();
+
+  if (serieError || !serie) {
+    throw serieError ?? new Error("Erro ao criar série recorrente");
+  }
+
+  const recorrenciaId = serie.id as string;
+
+  try {
+    // 2) atendimentos (servicos)
+    const ocorrencias = gerarOcorrencias(
+      dataInicioDate,
+      dataFimDate,
+      payload.diasSemana
+    );
+    if (ocorrencias.length > 0) {
+      const servicosRows = ocorrencias.map((d) => ({
+        user_id: userId,
+        client_id: payload.clientId,
+        piscina_id: payload.piscinaId || null,
+        tipo_servico: payload.tipoServico ?? null,
+        data_agendamento: toISODate(d),
+        horario: payload.horario,
+        status: "agendado",
+        recorrencia_id: recorrenciaId,
+      }));
+      const { error: servError } = await supabase
+        .from("servicos")
+        .insert(servicosRows);
+      if (servError) throw servError;
+    }
+
+    // 3) mensalidades (cobrancas)
+    const vencimentos = gerarVencimentos(
+      parseISO(payload.cobrancaInicio),
+      payload.diaVencimento,
+      payload.numMensalidades
+    );
+    if (vencimentos.length > 0) {
+      const cobrancasRows = vencimentos.map((d) => ({
+        user_id: userId,
+        client_id: payload.clientId,
+        recorrencia_id: recorrenciaId,
+        valor: payload.valorMensalidade,
+        data_vencimento: toISODate(d),
+        status: "pendente",
+      }));
+      const { error: cobrError } = await supabase
+        .from("cobrancas")
+        .insert(cobrancasRows);
+      if (cobrError) throw cobrError;
+    }
+
+    return {
+      recorrenciaId,
+      atendimentos: ocorrencias.length,
+      cobrancas: vencimentos.length,
+    };
+  } catch (err) {
+    // rollback manual (ordem: filhos antes do pai)
+    await supabase.from("cobrancas").delete().eq("recorrencia_id", recorrenciaId);
+    await supabase.from("servicos").delete().eq("recorrencia_id", recorrenciaId);
+    await supabase.from("servicos_recorrentes").delete().eq("id", recorrenciaId);
+    console.error("[createServicoRecorrente] rollback executado:", err);
+    throw err;
+  }
+}
+
+/** Lista as séries recorrentes do usuário (com nome do cliente). */
+export async function getServicosRecorrentes(): Promise<
+  (ServicoRecorrente & { cliente_nome?: string })[]
+> {
+  const userId = await getCurrentUserId();
+  const { data, error } = await supabase
+    .from("servicos_recorrentes")
+    .select("*, clientes(nome, sobrenome)")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("[getServicosRecorrentes]", error);
+    return [];
+  }
+
+  return (data ?? []).map((s: any) => ({
+    ...s,
+    cliente_nome: s.clientes ? `${s.clientes.nome} ${s.clientes.sobrenome}` : "",
+  }));
+}
+
+/**
+ * Altera o dia fixo de vencimento da série e recalcula as cobranças FUTURAS
+ * (data_vencimento >= hoje e status 'pendente'), preservando passadas/pagas.
+ */
+export async function updateDiaVencimentoRecorrente(
+  recorrenciaId: string,
+  novoDia: number
+) {
+  const userId = await getCurrentUserId();
+  const hojeISO = toISODate(new Date());
+
+  // 1) atualiza a série
+  const { error: serieError } = await supabase
+    .from("servicos_recorrentes")
+    .update({ dia_vencimento: novoDia })
+    .eq("id", recorrenciaId)
+    .eq("user_id", userId);
+  if (serieError) throw serieError;
+
+  // 2) cobranças futuras pendentes
+  const { data: futuras, error: fetchError } = await supabase
+    .from("cobrancas")
+    .select("id, data_vencimento")
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId)
+    .eq("status", "pendente")
+    .gte("data_vencimento", hojeISO);
+  if (fetchError) throw fetchError;
+
+  // 3) recalcula cada uma dentro do seu próprio mês
+  for (const c of futuras ?? []) {
+    const novaData = aplicarDiaFixo(parseISO(c.data_vencimento), novoDia);
+    const { error: updError } = await supabase
+      .from("cobrancas")
+      .update({ data_vencimento: toISODate(novaData) })
+      .eq("id", c.id)
+      .eq("user_id", userId);
+    if (updError) throw updError;
+  }
+
+  return { atualizadas: (futuras ?? []).length };
+}
+
+/**
+ * Cancela a série: status 'cancelado', remove atendimentos futuros não
+ * concluídos e cobranças futuras pendentes. Preserva passado e pagamentos.
+ */
+export async function cancelarServicoRecorrente(recorrenciaId: string) {
+  const userId = await getCurrentUserId();
+  const hojeISO = toISODate(new Date());
+
+  const { error: serieError } = await supabase
+    .from("servicos_recorrentes")
+    .update({ status: "cancelado" })
+    .eq("id", recorrenciaId)
+    .eq("user_id", userId);
+  if (serieError) throw serieError;
+
+  const { error: servError } = await supabase
+    .from("servicos")
+    .delete()
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId)
+    .gte("data_agendamento", hojeISO)
+    .neq("status", "concluido");
+  if (servError) throw servError;
+
+  const { error: cobrError } = await supabase
+    .from("cobrancas")
+    .delete()
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId)
+    .gte("data_vencimento", hojeISO)
+    .eq("status", "pendente");
+  if (cobrError) throw cobrError;
+}
+
+// ===========================================================================
+// PÁGINA DE PAGAMENTOS
+// ===========================================================================
+
+export type CobrancaPagamentoItem = {
+  id: string;
+  valor: number;
+  dataVencimento: string; // 'yyyy-MM-dd'
+  status: string;
+  origem: "avulso" | "recorrente";
+  clienteNome: string;
+  tipoServico: string | null;
+  atrasada: boolean;
+};
+
+/**
+ * Busca as cobranças relevantes para a página de Pagamentos: as atrasadas
+ * (pendente/parcial com vencimento no passado, sempre incluídas) e as que
+ * vencem dentro de [weekStartISO, weekEndISO]. Enriquece com nome do cliente
+ * e tipo de serviço via servico (avulso) ou servico_recorrente (recorrente).
+ */
+export async function getCobrancasPagamentos(
+  weekStartISO: string,
+  weekEndISO: string
+): Promise<CobrancaPagamentoItem[]> {
+  const userId = await getCurrentUserId();
+  const hojeISO = toISODate(new Date());
+
+  const baseSelect = "id, servico_id, recorrencia_id, valor, data_vencimento, status";
+
+  const [{ data: atrasadasData, error: atrasadasError }, { data: semanaData, error: semanaError }] =
+    await Promise.all([
+      supabase
+        .from("cobrancas")
+        .select(baseSelect)
+        .eq("user_id", userId)
+        .in("status", ["pendente", "parcial"])
+        .lt("data_vencimento", hojeISO),
+      supabase
+        .from("cobrancas")
+        .select(baseSelect)
+        .eq("user_id", userId)
+        .gte("data_vencimento", weekStartISO)
+        .lte("data_vencimento", weekEndISO),
+    ]);
+
+  if (atrasadasError) console.error("[getCobrancasPagamentos] erro atrasadas:", atrasadasError);
+  if (semanaError) console.error("[getCobrancasPagamentos] erro semana:", semanaError);
+
+  const porId = new Map<string, any>();
+  (atrasadasData ?? []).forEach((c: any) => porId.set(c.id, c));
+  (semanaData ?? []).forEach((c: any) => {
+    if (!porId.has(c.id)) porId.set(c.id, c);
+  });
+  const cobrancas = Array.from(porId.values());
+
+  const servicoIds = Array.from(new Set(cobrancas.map((c: any) => c.servico_id).filter(Boolean)));
+  const recorrenciaIds = Array.from(new Set(cobrancas.map((c: any) => c.recorrencia_id).filter(Boolean)));
+
+  const servicosMap: Record<string, any> = {};
+  if (servicoIds.length > 0) {
+    const { data } = await supabase
+      .from("servicos")
+      .select("id, client_id, tipo_servico")
+      .in("id", servicoIds);
+    (data ?? []).forEach((s: any) => { servicosMap[s.id] = s; });
+  }
+
+  const recorrenciasMap: Record<string, any> = {};
+  if (recorrenciaIds.length > 0) {
+    const { data } = await supabase
+      .from("servicos_recorrentes")
+      .select("id, client_id, tipo_servico")
+      .in("id", recorrenciaIds);
+    (data ?? []).forEach((s: any) => { recorrenciasMap[s.id] = s; });
+  }
+
+  const clienteIds = Array.from(
+    new Set([
+      ...Object.values(servicosMap).map((s: any) => s.client_id),
+      ...Object.values(recorrenciasMap).map((s: any) => s.client_id),
+    ].filter(Boolean))
+  );
+
+  const clientesMap: Record<string, any> = {};
+  if (clienteIds.length > 0) {
+    const { data } = await supabase
+      .from("clientes")
+      .select("id, nome, sobrenome")
+      .in("id", clienteIds);
+    (data ?? []).forEach((c: any) => { clientesMap[c.id] = c; });
+  }
+
+  return cobrancas.map((c: any) => {
+    const origem: "avulso" | "recorrente" = c.recorrencia_id ? "recorrente" : "avulso";
+    const pai = origem === "recorrente" ? recorrenciasMap[c.recorrencia_id] : servicosMap[c.servico_id];
+    const cliente = pai ? clientesMap[pai.client_id] : null;
+    const atrasada = (c.status === "pendente" || c.status === "parcial") && c.data_vencimento < hojeISO;
+    return {
+      id: c.id,
+      valor: c.valor,
+      dataVencimento: c.data_vencimento,
+      status: c.status ?? "pendente",
+      origem,
+      clienteNome: cliente ? `${cliente.nome} ${cliente.sobrenome}` : "",
+      tipoServico: pai?.tipo_servico ?? null,
+      atrasada,
+    };
+  });
 }

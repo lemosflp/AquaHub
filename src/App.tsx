@@ -12,6 +12,7 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import Dashboard from "./pages/Dashboard";
 import Calendario from "./pages/Calendario";
 import Eventos from "./pages/Eventos";
+import Pagamentos from "./pages/Pagamentos";
 import Pacotes from "./pages/Pacotes";
 import Clientes from "./pages/Clientes";
 import TestClienteForm from "./pages/TestClienteForm";
@@ -46,6 +47,7 @@ function PrivateRoutes() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/calendario" element={<Calendario />} />
         <Route path="/Eventos" element={<Eventos />} />
+        <Route path="/pagamentos" element={<Pagamentos />} />
         {/* <Route path="/propostas" element={<Pacotes />} /> */}
         <Route path="/test-cliente" element={<TestClienteForm />} />
         <Route path="/clientes" element={<Clientes />} />
