@@ -143,7 +143,7 @@ export const Layout = ({ children }: LayoutProps) => {
 
         {/* rodapé: Conta / Ajuda / Sair */}
         <div className="border-t border-blue-600 px-3 py-3 text-sm space-y-1">
-          {/* <NavLink
+          <NavLink
             to="/ajuda"
             className={({ isActive }) =>
               `flex items-center gap-2 rounded-md px-3 py-2 transition ${
@@ -155,7 +155,7 @@ export const Layout = ({ children }: LayoutProps) => {
           >
             <HelpCircle size={16} />
             <span>Ajuda</span>
-          </NavLink> */}
+          </NavLink>
 
           <NavLink
             to="/logout"
@@ -308,7 +308,7 @@ export const Layout = ({ children }: LayoutProps) => {
             </nav>
 
             <div className="border-t border-blue-600 px-3 py-3 text-sm space-y-1">
-              {/* <NavLink
+              <NavLink
                 to="/ajuda"
                 onClick={closeMobileMenu}
                 className={({ isActive }) =>
@@ -321,7 +321,7 @@ export const Layout = ({ children }: LayoutProps) => {
               >
                 <HelpCircle size={16} />
                 <span>Ajuda</span>
-              </NavLink> */}
+              </NavLink>
 
               <button
                 onClick={async () => {

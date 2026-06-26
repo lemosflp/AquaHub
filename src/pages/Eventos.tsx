@@ -15,6 +15,7 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabaseClient";
 import { ServicoRecorrenteForm } from "@/components/ServicoRecorrenteForm";
 import { ServicosRecorrentesList } from "@/components/ServicosRecorrentesList";
+import { TURNO_OPTIONS, getHorarioPadraoFromHorario, getTurnoLabelFromHorario } from "@/lib/turnos";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -664,7 +665,7 @@ export default function Eventos() {
     ) {
       toast({
         title: "Campos obrigatórios",
-        description: "Preencha cliente, piscina, tipo, data, horário, valor e forma de pagamento.",
+        description: "Preencha cliente, piscina, tipo, data, turno, valor e forma de pagamento.",
         variant: "destructive",
       });
       return;
@@ -851,7 +852,7 @@ export default function Eventos() {
       piscinaId: s.piscina_id,
       tipoServico: s.tipo_servico ?? "",
       dataAgendamento: s.data_agendamento ?? "",
-      horario: s.horario ?? "",
+      horario: getHorarioPadraoFromHorario(s.horario),
       status: s.status ?? "agendado",
       observacoes: s.observacoes ?? "",
       valor: undefined,
@@ -1107,12 +1108,17 @@ export default function Eventos() {
                       />
                     </div>
                     <div>
-                      <Label>Horário: <span className="text-red-500">*</span></Label>
-                      <Input
-                        type="time"
-                        value={formData.horario}
-                        onChange={e => handleInputChange("horario", e.target.value)}
-                      />
+                      <Label>Turno: <span className="text-red-500">*</span></Label>
+                      <Select value={formData.horario} onValueChange={v => handleInputChange("horario", v)}>
+                        <SelectTrigger><SelectValue placeholder="Selecione o turno" /></SelectTrigger>
+                        <SelectContent>
+                          {TURNO_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.horario}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                   </div>
 
@@ -1425,7 +1431,7 @@ export default function Eventos() {
                           </div>
                           <div className={`flex items-center gap-2 rounded px-3 py-2 ${isCancelado ? "bg-red-50/70" : "bg-slate-50"}`}>
                             <Clock size={16} className={`${isCancelado ? "text-red-600" : "text-blue-600"} flex-shrink-0`} />
-                            <span className="text-slate-700">{servico.horario ?? "—"}</span>
+                            <span className="text-slate-700">{getTurnoLabelFromHorario(servico.horario)}</span>
                           </div>
                           <div className={`flex items-center gap-2 rounded px-3 py-2 ${isCancelado ? "bg-red-50/70" : "bg-slate-50"}`}>
                             <Waves size={16} className={`${isCancelado ? "text-red-600" : "text-blue-600"} flex-shrink-0`} />
@@ -1542,7 +1548,7 @@ export default function Eventos() {
                         : "—"}
                       {" • "}
                       <Clock size={14} />
-                      {selectedServico.horario ?? "—"}
+                      {getTurnoLabelFromHorario(selectedServico.horario)}
                     </p>
                   </div>
                 </div>
@@ -1635,11 +1641,10 @@ export default function Eventos() {
                             </div>
                           </div>
                           <div className="rounded-md bg-white border border-purple-100 p-3 text-center">
-                            <p className="text-xs text-muted-foreground mb-1">Turno / Horário</p>
+                            <p className="text-xs text-muted-foreground mb-1">Turno</p>
                             <p className="font-semibold text-purple-900 text-sm">
                               {TURNO_LABEL[selectedSerie.turno] ?? selectedSerie.turno}
                             </p>
-                            <p className="text-xs text-slate-600">{selectedSerie.horario}</p>
                           </div>
                           <div className="rounded-md bg-white border border-purple-100 p-3 text-center">
                             <p className="text-xs text-muted-foreground mb-1">Vigência</p>
@@ -1683,7 +1688,7 @@ export default function Eventos() {
                                       ? format(parseISO(at.data_agendamento), "dd/MM/yyyy", { locale: ptBR })
                                       : "—"}
                                   </span>
-                                  <span className="text-slate-500 w-12 shrink-0">{at.horario?.slice(0, 5) ?? "—"}</span>
+                                  <span className="text-slate-500 w-16 shrink-0">{getTurnoLabelFromHorario(at.horario)}</span>
                                   <Badge className={`text-[10px] px-1.5 py-0 ${getStatusColor(at.status)}`} variant="outline">
                                     {at.status ?? "—"}
                                   </Badge>

@@ -8,6 +8,7 @@ import { format, parseISO, startOfWeek, addDays, isSameDay, isValid } from "date
 import { ptBR } from "date-fns/locale";
 import { useAppContext } from "@/contexts/AppContext";
 import type { Evento } from "@/types";
+import { getTurnoLabelFromHorario } from "@/lib/turnos";
 
 // --- helpers de data ---
 
@@ -161,7 +162,7 @@ export default function Calendario() {
     const descriptionParts = [
       `Cliente: ${firstEvent.clienteNome ?? "N/A"}`,
       `Tipo: ${firstEvent.tipo ?? "N/A"}`,
-      `Hora: ${firstEvent.horaInicio ?? "--:--"}`,
+      `Turno: ${getTurnoLabelFromHorario(firstEvent.horaInicio)}`,
       firstEvent.aniversarianteNome ? `Aniversariante: ${firstEvent.aniversarianteNome}${firstEvent.idade ? ` (${firstEvent.idade} anos)` : ""}` : null,
       firstEvent.decoracao ? `Decoração: ${firstEvent.decoracao}` : null,
       firstEvent.quantidadeConvidados ? `Quantidade de Convidados: ${firstEvent.quantidadeConvidados}` : null,
@@ -416,11 +417,9 @@ END:VEVENT
                                                     className={`cursor-pointer text-[10px] sm:text-xs px-2 py-1 rounded font-semibold text-center truncate ${getTipoColor(
                                                       evento.tipo
                                                     )}`}
-                                                    title={`${evento.titulo ?? ""} - ${
-                                                      evento.horaInicio ?? ""
-                                                    }`}
+                                                    title={`${evento.titulo ?? ""} - ${getTurnoLabelFromHorario(evento.horaInicio)}`}
                                                   >
-                                                    <span className="mr-1">{evento.horaInicio ?? "--:--"}</span>
+                                                    <span className="mr-1">{getTurnoLabelFromHorario(evento.horaInicio)}</span>
                                                     <span className="hidden sm:inline truncate">
                                                       {evento.titulo ?? "Evento"}
                                                     </span>
@@ -467,7 +466,7 @@ END:VEVENT
                               {format(ev.dataDate, "dd/MM/yyyy")}
                             </span>
                             {" • "}
-                            <span>{ev.horaInicio ?? "--:--"}</span>
+                            <span>{getTurnoLabelFromHorario(ev.horaInicio)}</span>
                             {ev.clienteNome && (
                               <>
                                 {" • "}

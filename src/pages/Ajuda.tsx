@@ -1,269 +1,275 @@
-import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { 
-  HelpCircle, 
-  MessageSquare, 
-  Mail, 
-  Book, 
-  Send,
-  Loader2
+import { Badge } from "@/components/ui/badge";
+import {
+  Calendar,
+  CheckCircle2,
+  CreditCard,
+  HelpCircle,
+  LayoutDashboard,
+  ListChecks,
+  RefreshCw,
+  UserPlus,
+  Users,
+  Waves,
 } from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
-import { sendSupportEmail } from "@/services/emailService";
+
+const fluxo = [
+  {
+    title: "Cadastre o cliente",
+    description: "Comece em Clientes, registre os dados do responsável e associe as piscinas atendidas.",
+    icon: Users,
+    route: "/clientes",
+    action: "Abrir Clientes",
+  },
+  {
+    title: "Agende o serviço",
+    description: "Em Serviços, escolha cliente, piscina, tipo, data e turno. Use recorrente para mensalidades e atendimentos fixos.",
+    icon: Waves,
+    route: "/Eventos",
+    action: "Abrir Serviços",
+  },
+  {
+    title: "Acompanhe cobranças",
+    description: "Cada serviço gera cobrança. Em Pagamentos, veja pendências, atrasos, recorrentes e registre recebimentos.",
+    icon: CreditCard,
+    route: "/pagamentos",
+    action: "Abrir Pagamentos",
+  },
+  {
+    title: "Organize a rotina",
+    description: "Use o Calendário para enxergar os serviços da semana e abrir rapidamente os detalhes de cada atendimento.",
+    icon: Calendar,
+    route: "/calendario",
+    action: "Abrir Calendário",
+  },
+];
+
+const telas = [
+  {
+    title: "Dashboard",
+    icon: LayoutDashboard,
+    route: "/",
+    points: [
+      "Mostra os próximos serviços agendados.",
+      "Resume o financeiro do mês e os próximos pagamentos.",
+      "Destaca pagamentos recorrentes e médias de mensalidades.",
+      "No celular, mantém Ações Rápidas no topo para acesso imediato.",
+    ],
+  },
+  {
+    title: "Clientes",
+    icon: UserPlus,
+    route: "/clientes",
+    points: [
+      "Centraliza dados de contato do cliente.",
+      "Permite cadastrar e revisar piscinas vinculadas.",
+      "Serve como base para agendamentos e cobranças.",
+    ],
+  },
+  {
+    title: "Serviços",
+    icon: Waves,
+    route: "/Eventos",
+    points: [
+      "Cria serviços avulsos com cobrança e pagamento inicial.",
+      "Cria serviços recorrentes com atendimentos e mensalidades.",
+      "Usa turnos Manhã, Tarde e Noite, mantendo o horário técnico no banco.",
+      "Permite editar, cancelar, reativar, confirmar e abrir pagamentos.",
+    ],
+  },
+  {
+    title: "Pagamentos",
+    icon: CreditCard,
+    route: "/pagamentos",
+    points: [
+      "Lista cobranças avulsas e recorrentes no período.",
+      "Inclui cobranças atrasadas em aberto.",
+      "Filtra por todos, avulso, recorrente e pendentes.",
+      "Registra pagamentos totais ou parciais.",
+    ],
+  },
+  {
+    title: "Calendário",
+    icon: Calendar,
+    route: "/calendario",
+    points: [
+      "Mostra os serviços da semana em visão de agenda.",
+      "Usa os turnos para leitura rápida da rotina.",
+      "Abre o serviço selecionado para detalhes e ações.",
+    ],
+  },
+];
+
+const boasPraticas = [
+  "Cadastre a piscina antes de agendar o primeiro serviço.",
+  "Use serviço recorrente quando o atendimento e a cobrança se repetem por vários meses.",
+  "Registre pagamentos assim que receber para manter saldo e pendências confiáveis.",
+  "Cancele serviços que não serão executados em vez de perder o histórico.",
+  "Revise o Dashboard no início do dia para ver próximos serviços e recebimentos.",
+];
 
 export default function Ajuda() {
-  const { toast } = useToast();
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [formData, setFormData] = useState({
-    name: "",
-    email: "",
-    subject: "",
-    message: "",
-  });
-
-  const faqs = [
-    {
-      question: "Como cadastrar um novo cliente?",
-      answer: "Acesse a seção 'Clientes' no menu lateral e clique em 'Novo Cliente'. Preencha todos os campos obrigatórios e clique em 'Cadastrar'.",
-      category: "Clientes"
-    },
-    {
-      question: "Como criar um evento no calendário?",
-      answer: "Na tela de Eventos, clique em 'Cadastrar Evento' e preencha as informações do evento, incluindo data, horário e cliente.",
-      category: "Eventos"
-    },
-    {
-      question: "Como gerenciar propostas e adicionais?",
-      answer: "Na seção 'Propostas, Adicionais e Equipes' você pode criar e gerenciar todos os componentes dos seus Eventos.",
-      category: "Propostas"
-    },
-    {
-      question: "Como calcular o valor de um evento?",
-      answer: "O sistema calcula automaticamente baseado na proposta selecionada, número de convidados e adicionais escolhidos.",
-      category: "Eventos"
-    },
-    {
-      question: "Como visualizar o calendário de Eventos?",
-      answer: "Acesse a seção 'Calendário' para visualizar todos os Eventos organizados por data com filtros por status.",
-      category: "Calendário"
-    }
-  ];
-
-  const handleInputChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
-  ) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!formData.name.trim() || !formData.email.trim() || !formData.subject.trim() || !formData.message.trim()) {
-      toast({
-        title: "Campos obrigatórios",
-        description: "Por favor, preencha todos os campos.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    // Validação básica de email
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(formData.email)) {
-      toast({
-        title: "Email inválido",
-        description: "Por favor, insira um email válido.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setIsSubmitting(true);
-
-    const result = await sendSupportEmail({
-      name: formData.name,
-      from: formData.email,
-      subject: formData.subject,
-      message: formData.message,
-    });
-
-    setIsSubmitting(false);
-
-    if (result.success) {
-      toast({
-        title: "Mensagem enviada com sucesso!",
-        description: "Nossa equipe entrará em contato em breve.",
-      });
-      setFormData({ name: "", email: "", subject: "", message: "" });
-    } else {
-      toast({
-        title: "Erro ao enviar mensagem",
-        description: result.error || "Tente novamente mais tarde.",
-        variant: "destructive",
-      });
-    }
-  };
+  const navigate = useNavigate();
 
   return (
-    <div className="p-6 bg-gradient-to-br from-slate-50 to-slate-100 min-h-screen">
-      {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-4xl font-bold text-foreground">Central de Ajuda</h1>
+    <div className="p-4 md:p-6 bg-gradient-to-br from-slate-50 to-slate-100 min-h-screen">
+      <div className="mb-6 md:mb-8">
+        <h1 className="text-3xl md:text-4xl font-bold text-foreground">Ajuda</h1>
         <p className="text-muted-foreground mt-2">
-          Encontre respostas e entre em contato com nosso suporte
+          Guia rápido para operar clientes, serviços, recorrências e pagamentos.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Main Content */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Contact Form */}
+      <div className="grid grid-cols-1 xl:grid-cols-[1.5fr_1fr] gap-6">
+        <div className="space-y-6">
           <Card className="border-l-4 border-l-blue-600 shadow-lg">
             <CardHeader className="bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
               <CardTitle className="flex items-center gap-2 text-blue-900">
-                <MessageSquare size={20} />
-                Enviar Mensagem de Suporte
+                <ListChecks size={20} />
+                Fluxo recomendado
               </CardTitle>
-              <p className="text-xs text-blue-700 mt-1">
-                Nossa equipe responderá em até 24 horas úteis
-              </p>
             </CardHeader>
             <CardContent className="pt-6">
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium text-foreground">
-                      Nome <span className="text-red-500">*</span>
-                    </label>
-                    <Input
-                      name="name"
-                      value={formData.name}
-                      onChange={handleInputChange}
-                      placeholder="Seu nome completo"
-                      disabled={isSubmitting}
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium text-foreground">
-                      E-mail <span className="text-red-500">*</span>
-                    </label>
-                    <Input
-                      name="email"
-                      type="email"
-                      value={formData.email}
-                      onChange={handleInputChange}
-                      placeholder="seu@email.com"
-                      disabled={isSubmitting}
-                      required
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-foreground">
-                    Assunto <span className="text-red-500">*</span>
-                  </label>
-                  <Input
-                    name="subject"
-                    value={formData.subject}
-                    onChange={handleInputChange}
-                    placeholder="Assunto da sua mensagem"
-                    disabled={isSubmitting}
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-foreground">
-                    Mensagem <span className="text-red-500">*</span>
-                  </label>
-                  <Textarea
-                    name="message"
-                    value={formData.message}
-                    onChange={handleInputChange}
-                    placeholder="Descreva sua dúvida ou problema detalhadamente..."
-                    rows={6}
-                    disabled={isSubmitting}
-                    required
-                  />
-                </div>
-                <Button
-                  type="submit"
-                  className="bg-blue-600 hover:bg-blue-700 text-white w-full md:w-auto"
-                  disabled={isSubmitting}
-                >
-                  {isSubmitting ? (
-                    <>
-                      <Loader2 size={16} className="mr-2 animate-spin" />
-                      Enviando...
-                    </>
-                  ) : (
-                    <>
-                      <Send size={16} className="mr-2" />
-                      Enviar Mensagem
-                    </>
-                  )}
-                </Button>
-              </form>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {fluxo.map((item, index) => {
+                  const Icon = item.icon;
+                  return (
+                    <div key={item.title} className="rounded-lg border border-blue-200 bg-white p-4">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-100 text-blue-700">
+                          <Icon size={18} />
+                        </div>
+                        <div className="min-w-0">
+                          <Badge className="mb-2 bg-blue-50 text-blue-700 border border-blue-200" variant="outline">
+                            Passo {index + 1}
+                          </Badge>
+                          <h2 className="font-semibold text-slate-900">{item.title}</h2>
+                          <p className="mt-1 text-sm text-slate-600 leading-relaxed">{item.description}</p>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="mt-3 border-blue-300 text-blue-700 hover:bg-blue-50"
+                            onClick={() => navigate(item.route)}
+                          >
+                            {item.action}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </CardContent>
           </Card>
 
-          {/* FAQ Section */}
-          <Card className="border-l-4 border-l-blue-500 shadow-lg">
-            <CardHeader className="bg-gradient-to-r from-blue-50 to-cyan-50 border-b border-blue-200">
-              <CardTitle className="flex items-center gap-2 text-blue-800">
+          <Card className="border-l-4 border-l-cyan-500 shadow-lg">
+            <CardHeader className="bg-gradient-to-r from-cyan-50 to-white border-b border-cyan-200">
+              <CardTitle className="flex items-center gap-2 text-cyan-900">
                 <HelpCircle size={20} />
-                Perguntas Frequentes
+                O que cada tela faz
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-6">
-              <div className="space-y-4">
-                {faqs.map((faq, index) => (
-                  <div
-                    key={index}
-                    className="border border-blue-200 rounded-lg p-4 bg-gradient-to-r from-blue-50/30 to-white hover:shadow-md transition-all"
-                  >
-                    <div className="flex items-start justify-between mb-2">
-                      <h3 className="font-semibold text-foreground pr-4">
-                        {faq.question}
-                      </h3>
-                      <span className="text-xs font-medium px-2 py-1 rounded-full bg-blue-100 text-blue-700 whitespace-nowrap">
-                        {faq.category}
-                      </span>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {telas.map((tela) => {
+                  const Icon = tela.icon;
+                  return (
+                    <div key={tela.title} className="rounded-lg border border-slate-200 bg-white p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          <Icon size={18} className="text-cyan-700" />
+                          <h2 className="font-semibold text-slate-900">{tela.title}</h2>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 px-2 text-xs text-cyan-700 hover:bg-cyan-50"
+                          onClick={() => navigate(tela.route)}
+                        >
+                          Abrir
+                        </Button>
+                      </div>
+                      <div className="mt-3 space-y-2">
+                        {tela.points.map((point) => (
+                          <div key={point} className="flex items-start gap-2 text-sm text-slate-600">
+                            <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-green-600" />
+                            <span>{point}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                    <p className="text-sm text-muted-foreground leading-relaxed">
-                      {faq.answer}
-                    </p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* Sidebar */}
         <div className="space-y-6">
-          {/* Contact Info */}
-          <Card className="border-l-4 border-l-blue-600 shadow-lg">
-            <CardHeader className="bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
-              <CardTitle className="text-base text-blue-900">
-                Informações de Contato
+          <Card className="border-l-4 border-l-emerald-500 shadow-lg">
+            <CardHeader className="bg-gradient-to-r from-emerald-50 to-white border-b border-emerald-200">
+              <CardTitle className="flex items-center gap-2 text-emerald-900">
+                <RefreshCw size={20} />
+                Recorrências
               </CardTitle>
             </CardHeader>
-            <CardContent className="pt-4 space-y-4">
-              <div className="flex items-start gap-3">
-                <div className="p-2 bg-blue-100 rounded-lg">
-                  <Mail size={16} className="text-blue-600" />
-                </div>
-                <div>
-                  <div className="font-medium text-sm">E-mail</div>
-                  <div className="text-sm text-muted-foreground">
-                  meusalao.suporte@gmail.com
+            <CardContent className="pt-5 space-y-3 text-sm text-slate-600">
+              <p>
+                Use recorrência quando o mesmo cliente terá atendimentos repetidos e mensalidades geradas automaticamente.
+              </p>
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 p-3">
+                <p className="font-semibold text-emerald-900">Como funciona</p>
+                <p className="mt-1">
+                  O sistema cria a série, os atendimentos em Serviços e as cobranças em Pagamentos usando a vigência escolhida.
+                </p>
+              </div>
+              <div className="rounded-lg border border-emerald-200 bg-white p-3">
+                <p className="font-semibold text-emerald-900">Ao editar uma série</p>
+                <p className="mt-1">
+                  O passado é preservado e os próximos atendimentos/cobranças são regenerados conforme a nova configuração.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-l-4 border-l-amber-500 shadow-lg">
+            <CardHeader className="bg-gradient-to-r from-amber-50 to-white border-b border-amber-200">
+              <CardTitle className="text-amber-900">Boas práticas</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-5">
+              <div className="space-y-3">
+                {boasPraticas.map((item) => (
+                  <div key={item} className="flex items-start gap-2 text-sm text-slate-700">
+                    <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-amber-600" />
+                    <span>{item}</span>
                   </div>
-                </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-l-4 border-l-slate-500 shadow-lg">
+            <CardHeader className="bg-gradient-to-r from-slate-100 to-white border-b border-slate-200">
+              <CardTitle className="text-slate-900">Atalhos úteis</CardTitle>
+            </CardHeader>
+            <CardContent className="pt-5">
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="outline" className="border-blue-300 text-blue-700" onClick={() => navigate("/")}>
+                  Dashboard
+                </Button>
+                <Button variant="outline" className="border-blue-300 text-blue-700" onClick={() => navigate("/Eventos")}>
+                  Serviços
+                </Button>
+                <Button variant="outline" className="border-blue-300 text-blue-700" onClick={() => navigate("/pagamentos")}>
+                  Pagamentos
+                </Button>
+                <Button variant="outline" className="border-blue-300 text-blue-700" onClick={() => navigate("/clientes")}>
+                  Clientes
+                </Button>
               </div>
             </CardContent>
           </Card>

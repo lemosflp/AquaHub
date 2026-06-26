@@ -22,6 +22,7 @@ import {
 import { createServicoRecorrente, updateServicoRecorrente } from "@/services/supabaseApi";
 import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { TURNO_HORARIOS, TURNO_OPTIONS, getHorarioPadraoFromHorario, getTurnoFromHorario } from "@/lib/turnos";
 
 type ClienteOpt = { id: string; nome: string; sobrenome: string };
 type PiscinaOpt = { id: string; tamanho: string; tipo: string | null; endereco: string | null };
@@ -77,6 +78,10 @@ function mergeById<T extends { id: string }>(items: T[], item: T | null | undefi
   return [...items, item];
 }
 
+function getHorarioFromTurno(turno: "manha" | "tarde" | "noite" | "") {
+  return turno ? TURNO_HORARIOS[turno] : "";
+}
+
 export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
   const { toast } = useToast();
   const touchedVigenciaRef = useRef(false);
@@ -91,7 +96,6 @@ export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
   const [tipoServico, setTipoServico] = useState("");
   const [diasSemana, setDiasSemana] = useState<number[]>([]);
   const [turno, setTurno] = useState<"manha" | "tarde" | "noite" | "">("");
-  const [horario, setHorario] = useState("");
   const [dataInicio, setDataInicio] = useState("");
   const [vigenciaQtd, setVigenciaQtd] = useState<number | undefined>(undefined);
   const [vigenciaUnidade, setVigenciaUnidade] = useState<"semanas" | "meses">("semanas");
@@ -124,8 +128,8 @@ export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
     setPiscinaId(recorrencia.piscina_id ?? "");
     setTipoServico(recorrencia.tipo_servico ?? "");
     setDiasSemana(recorrencia.dias_semana);
-    setTurno(recorrencia.turno);
-    setHorario(recorrencia.horario.slice(0, 5));
+    const turnoRecorrencia = recorrencia.turno || getTurnoFromHorario(recorrencia.horario) || "";
+    setTurno(turnoRecorrencia);
     setDataInicio(recorrencia.data_inicio);
     setVigenciaQtd(recorrencia.vigencia_qtd);
     setVigenciaUnidade(recorrencia.vigencia_unidade);
@@ -260,7 +264,6 @@ export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
     if (!clienteId) return "Selecione o cliente.";
     if (diasSemana.length === 0) return "Selecione ao menos um dia da semana.";
     if (!turno) return "Selecione o turno.";
-    if (!horario) return "Informe o horário.";
     if (!dataInicio) return "Informe a data de início.";
     if (!vigenciaQtd || vigenciaQtd <= 0) return "Informe a duração da vigência.";
     if (!diaVencimento || diaVencimento < 1 || diaVencimento > 31)
@@ -284,13 +287,14 @@ export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
     }
     setSubmitting(true);
     try {
+      const horarioTurno = getHorarioFromTurno(turno) || getHorarioPadraoFromHorario(recorrencia?.horario);
       if (recorrencia) {
         const res = await updateServicoRecorrente(recorrencia.id, {
           piscinaId,
           tipoServico: tipoServico || null,
           diasSemana,
           turno: turno as "manha" | "tarde" | "noite",
-          horario,
+          horario: horarioTurno,
           vigenciaQtd: vigenciaQtd!,
           vigenciaUnidade,
           diaVencimento: diaVencimento!,
@@ -309,7 +313,7 @@ export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
           tipoServico: tipoServico || null,
           diasSemana,
           turno: turno as "manha" | "tarde" | "noite",
-          horario,
+          horario: horarioTurno,
           dataInicio,
           vigenciaQtd: vigenciaQtd!,
           vigenciaUnidade,
@@ -427,22 +431,26 @@ export function ServicoRecorrenteForm({ onCreated, recorrencia }: Props) {
             </div>
           </div>
 
-          {/* Turno + Horário */}
+          {/* Turno */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <Label>Turno: <span className="text-red-500">*</span></Label>
-              <Select value={turno} onValueChange={(v) => setTurno(v as any)}>
+              <Select
+                value={turno}
+                onValueChange={(v) => {
+                  const nextTurno = v as "manha" | "tarde" | "noite";
+                  setTurno(nextTurno);
+                }}
+              >
                 <SelectTrigger><SelectValue placeholder="Selecione o turno" /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="manha">Manhã</SelectItem>
-                  <SelectItem value="tarde">Tarde</SelectItem>
-                  <SelectItem value="noite">Noite</SelectItem>
+                  {TURNO_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div>
-              <Label>Horário: <span className="text-red-500">*</span></Label>
-              <Input type="time" value={horario} onChange={(e) => setHorario(e.target.value)} />
             </div>
           </div>
 
