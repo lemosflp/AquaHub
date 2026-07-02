@@ -4,6 +4,7 @@ import {
   getClientesApi,
   createClienteApi,
   updateClienteApi,
+  deleteClienteApi,
   getEventosApi,
   createEventoApi,
   updateEventoApi,
@@ -16,6 +17,7 @@ type AppContextValue = {
   Eventos: Evento[];
   addCliente: (data: Omit<Cliente, "id" | "userId" | "createdAt">) => Promise<Cliente | null>;
   updateCliente: (id: string, patch: Partial<Cliente>) => Promise<Cliente | null>;
+  removeCliente: (id: string) => Promise<void>;
   refreshClientes: () => Promise<void>;
   addEvento: (data: Omit<Evento, "id" | "userId">) => Promise<void>;
   updateEvento: (id: string, patch: Partial<Evento>) => Promise<void>;
@@ -90,6 +92,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return atualizado;
   };
 
+  const removeCliente = async (id: string) => {
+    await deleteClienteApi(id);
+    setClientes((prev) => prev.filter((c) => c.id !== id));
+  };
+
   const addEvento = async (data: Omit<Evento, "id" | "userId">) => {
     console.log("[AppContext.addEvento] 1. Chamado com data:", data);
     
@@ -125,6 +132,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         Eventos,
         addCliente,
         updateCliente,
+        removeCliente,
         refreshClientes,
         addEvento,
         updateEvento,

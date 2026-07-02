@@ -2,22 +2,10 @@ import { useMemo, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Calendar, TrendingUp, Eye, EyeOff, RefreshCw, CreditCard } from "lucide-react";
-import { format, isAfter, parseISO } from "date-fns";
+import { AlertTriangle, TrendingUp, Eye, EyeOff, RefreshCw, CreditCard } from "lucide-react";
+import { format, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { supabase } from "@/lib/supabaseClient";
-import { getTurnoLabelFromHorario } from "@/lib/turnos";
-
-interface ProximoServico {
-  id: string;
-  tipo_servico: string | null;
-  data_agendamento: string;
-  horario: string | null;
-  status: string | null;
-  cliente_nome: string;
-  endereco_piscina: string | null;
-  cidade_piscina: string | null;
-}
 
 interface ResumoFinanceiro {
   valorTotalMes: number;
@@ -68,10 +56,60 @@ const RESUMO_RECORRENTE_INITIAL: ResumoRecorrente = {
   quantidadeProximoMes: 0,
 };
 
+// Resolve cliente_nome/tipo_servico de uma lista de cobrancas (avulsas ou
+// recorrentes) para exibição nos cards do dashboard.
+async function enriquecerCobrancas(cobrancas: any[], userId: string): Promise<ProximoPagamento[]> {
+  const servicoIds = Array.from(new Set(cobrancas.map((c: any) => c.servico_id).filter(Boolean)));
+  const recorrenciaIds = Array.from(new Set(cobrancas.map((c: any) => c.recorrencia_id).filter(Boolean)));
+
+  const [servicosResult, recorrenciasResult] = await Promise.all([
+    servicoIds.length > 0
+      ? supabase.from("servicos").select("id, client_id, tipo_servico").in("id", servicoIds)
+      : Promise.resolve({ data: [] as any[] }),
+    recorrenciaIds.length > 0
+      ? supabase.from("servicos_recorrentes").select("id, client_id, tipo_servico").in("id", recorrenciaIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ]);
+
+  const servicosMap: Record<string, any> = {};
+  (servicosResult.data ?? []).forEach((s: any) => { servicosMap[s.id] = s; });
+
+  const recorrenciasMap: Record<string, any> = {};
+  (recorrenciasResult.data ?? []).forEach((s: any) => { recorrenciasMap[s.id] = s; });
+
+  const clienteIds = Array.from(new Set([
+    ...Object.values(servicosMap).map((s: any) => s.client_id),
+    ...Object.values(recorrenciasMap).map((s: any) => s.client_id),
+  ].filter(Boolean)));
+
+  const { data: clientesData } = clienteIds.length > 0
+    ? await supabase.from("clientes").select("id, nome, sobrenome").in("id", clienteIds)
+    : { data: [] as any[] };
+
+  const clientesMap: Record<string, any> = {};
+  (clientesData ?? []).forEach((c: any) => { clientesMap[c.id] = c; });
+
+  return cobrancas.map((c: any) => {
+    const origem: "avulso" | "recorrente" = c.recorrencia_id ? "recorrente" : "avulso";
+    const pai = origem === "recorrente" ? recorrenciasMap[c.recorrencia_id] : servicosMap[c.servico_id];
+    const cliente = pai ? clientesMap[pai.client_id] : null;
+
+    return {
+      id: c.id,
+      valor: Number(c.valor) || 0,
+      data_vencimento: c.data_vencimento,
+      status: c.status,
+      origem,
+      cliente_nome: cliente ? `${cliente.nome} ${cliente.sobrenome}` : "Cliente",
+      tipo_servico: pai?.tipo_servico ?? null,
+    };
+  });
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [showFinancialValues, setShowFinancialValues] = useState(false);
-  const [proximosServicos, setProximosServicos] = useState<ProximoServico[]>([]);
+  const [cobrancasAtrasadas, setCobrancasAtrasadas] = useState<ProximoPagamento[]>([]);
   const [resumo, setResumo] = useState<ResumoFinanceiro>({ valorTotalMes: 0, totalPagoMes: 0, saldoReceberMes: 0 });
   const [resumoRecorrente, setResumoRecorrente] = useState<ResumoRecorrente>(RESUMO_RECORRENTE_INITIAL);
   const [proximosPagamentos, setProximosPagamentos] = useState<ProximoPagamento[]>([]);
@@ -87,7 +125,7 @@ export default function Dashboard() {
         const userId = userData?.user?.id ?? null;
         if (!userId) {
           console.warn('[Dashboard] usuário não autenticado');
-          setProximosServicos([]);
+          setCobrancasAtrasadas([]);
           setProximosPagamentos([]);
           setResumo({ valorTotalMes: 0, totalPagoMes: 0, saldoReceberMes: 0 });
           setResumoRecorrente(RESUMO_RECORRENTE_INITIAL);
@@ -104,32 +142,19 @@ export default function Dashboard() {
         const mesAnterior = getMonthRange(new Date(currentYear, currentMonth - 2, 1));
         const proximoMes = getMonthRange(new Date(currentYear, currentMonth, 1));
 
-        // --- Próximos serviços ---
-        const { data: servicosData, error: servicosError } = await supabase
-          .from("servicos")
-          .select(`
-          id, tipo_servico, data_agendamento, horario, status,
-          clientes(nome, sobrenome, cidade),
-          piscinas(endereco)
-        `)
-          .eq('user_id', userId)
-          .gte("data_agendamento", now.toISOString().split("T")[0])
-          .order("data_agendamento", { ascending: true })
+        // --- Cobranças atrasadas ---
+        const { data: atrasadasData, error: atrasadasError } = await supabase
+          .from("cobrancas")
+          .select("id, servico_id, recorrencia_id, valor, data_vencimento, status")
+          .eq("user_id", userId)
+          .in("status", ["pendente", "parcial"])
+          .lt("data_vencimento", now.toISOString().split("T")[0])
+          .order("data_vencimento", { ascending: true })
           .limit(4);
 
-        if (servicosError) console.error("Erro ao buscar serviços:", servicosError);
+        if (atrasadasError) console.error("Erro ao buscar cobranças atrasadas:", atrasadasError);
 
-        const proximosMapped: ProximoServico[] = (servicosData ?? []).map((s: any) => ({
-          id: s.id,
-          tipo_servico: s.tipo_servico,
-          data_agendamento: s.data_agendamento,
-          horario: s.horario,
-          status: s.status,
-          cliente_nome: s.clientes ? `${s.clientes.nome} ${s.clientes.sobrenome}` : "—",
-          endereco_piscina: s.piscinas?.endereco ?? null,
-          cidade_piscina: s.clientes?.cidade ?? null,
-        }));
-        setProximosServicos(proximosMapped);
+        setCobrancasAtrasadas(await enriquecerCobrancas(atrasadasData ?? [], userId));
 
         // --- Cobranças do mês ---
         const { data: cobrancasData, error: cobrancasError } = await supabase
@@ -222,52 +247,7 @@ export default function Dashboard() {
 
         if (proximasCobrancasError) console.error("Erro ao buscar próximos pagamentos:", proximasCobrancasError);
 
-        const proximasCobrancas = proximasCobrancasData ?? [];
-        const servicoIds = Array.from(new Set(proximasCobrancas.map((c: any) => c.servico_id).filter(Boolean)));
-        const recorrenciaIds = Array.from(new Set(proximasCobrancas.map((c: any) => c.recorrencia_id).filter(Boolean)));
-
-        const [servicosResult, recorrenciasResult] = await Promise.all([
-          servicoIds.length > 0
-            ? supabase.from("servicos").select("id, client_id, tipo_servico").in("id", servicoIds)
-            : Promise.resolve({ data: [] }),
-          recorrenciaIds.length > 0
-            ? supabase.from("servicos_recorrentes").select("id, client_id, tipo_servico").in("id", recorrenciaIds)
-            : Promise.resolve({ data: [] }),
-        ]);
-
-        const servicosMap: Record<string, any> = {};
-        (servicosResult.data ?? []).forEach((s: any) => { servicosMap[s.id] = s; });
-
-        const recorrenciasMap: Record<string, any> = {};
-        (recorrenciasResult.data ?? []).forEach((s: any) => { recorrenciasMap[s.id] = s; });
-
-        const clienteIds = Array.from(new Set([
-          ...Object.values(servicosMap).map((s: any) => s.client_id),
-          ...Object.values(recorrenciasMap).map((s: any) => s.client_id),
-        ].filter(Boolean)));
-
-        const { data: clientesData } = clienteIds.length > 0
-          ? await supabase.from("clientes").select("id, nome, sobrenome").in("id", clienteIds)
-          : { data: [] };
-
-        const clientesMap: Record<string, any> = {};
-        (clientesData ?? []).forEach((c: any) => { clientesMap[c.id] = c; });
-
-        setProximosPagamentos(proximasCobrancas.map((c: any) => {
-          const origem: "avulso" | "recorrente" = c.recorrencia_id ? "recorrente" : "avulso";
-          const pai = origem === "recorrente" ? recorrenciasMap[c.recorrencia_id] : servicosMap[c.servico_id];
-          const cliente = pai ? clientesMap[pai.client_id] : null;
-
-          return {
-            id: c.id,
-            valor: Number(c.valor) || 0,
-            data_vencimento: c.data_vencimento,
-            status: c.status,
-            origem,
-            cliente_nome: cliente ? `${cliente.nome} ${cliente.sobrenome}` : "Cliente",
-            tipo_servico: pai?.tipo_servico ?? null,
-          };
-        }));
+        setProximosPagamentos(await enriquecerCobrancas(proximasCobrancasData ?? [], userId));
       } catch (err) {
         console.error("fetchDashboard - erro:", err);
       } finally {
@@ -289,56 +269,41 @@ export default function Dashboard() {
       <div className="flex flex-col gap-6">
       {/* Grid de conteúdo */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 order-2 md:order-1">
-        {/* Próximos Serviços */}
-        <Card className="border-l-4 border-l-blue-600 shadow-lg">
-          <CardHeader className="bg-gradient-to-r from-blue-50 to-blue-100 border-b border-blue-200">
-            <CardTitle className="flex items-center gap-2 text-blue-900">
-              <Calendar size={20} />
-              Próximos Serviços
+        {/* Cobranças Atrasadas */}
+        <Card className="border-l-4 border-l-red-600 shadow-lg">
+          <CardHeader className="bg-gradient-to-r from-red-50 to-red-100 border-b border-red-200">
+            <CardTitle className="flex items-center gap-2 text-red-900">
+              <AlertTriangle size={20} />
+              Cobranças Atrasadas
             </CardTitle>
           </CardHeader>
           <CardContent className="pt-6">
             {loading ? (
               <div className="text-center py-8 text-muted-foreground">Carregando...</div>
-            ) : proximosServicos.length === 0 ? (
+            ) : cobrancasAtrasadas.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
-                <p>Nenhum serviço próximo</p>
-                <Button
-                  size="sm"
-                  className="mt-3 bg-blue-600 hover:bg-blue-700 text-white"
-                  onClick={() => navigate("/Eventos")}
-                >
-                  + Agendar Serviço
-                </Button>
+                <p>Nenhuma cobrança atrasada 🎉</p>
               </div>
             ) : (
               <div className="space-y-3">
-                {proximosServicos.map(servico => (
+                {cobrancasAtrasadas.map(cobranca => (
                   <div
-                    key={servico.id}
-                    onClick={() => navigate('/eventos', { state: { showForm: false, selectedServico: true, pagamentoModal: false, viewId: servico.id } })}
-                    className="cursor-pointer flex p-3 border border-blue-200 rounded-lg bg-gradient-to-r from-blue-50 to-white hover:shadow-md transition"
+                    key={cobranca.id}
+                    onClick={() => navigate("/pagamentos")}
+                    className="cursor-pointer flex p-3 border border-red-200 rounded-lg bg-gradient-to-r from-red-50 to-white hover:shadow-md transition"
                   >
-                    <div className="flex justify-between items-start">
+                    <div className="flex justify-between items-start w-full">
                       <div>
-                        <h4 className="font-semibold text-blue-900">{servico.cliente_nome}</h4>
+                        <h4 className="font-semibold text-red-900">{cobranca.cliente_nome}</h4>
                         <p className="text-xs text-slate-600 mt-1">
-                          {servico.tipo_servico && <span className="mr-2">🔧 {servico.tipo_servico}</span>}
-                          📅 {servico.data_agendamento
-                            ? new Date(servico.data_agendamento + "T00:00:00").toLocaleDateString("pt-BR")
+                          {cobranca.tipo_servico && <span className="mr-2">🔧 {cobranca.tipo_servico}</span>}
+                          📅 Venceu em {cobranca.data_vencimento
+                            ? new Date(cobranca.data_vencimento + "T00:00:00").toLocaleDateString("pt-BR")
                             : "—"}
-                          {servico.horario ? ` às ${getTurnoLabelFromHorario(servico.horario)}` : ""}
                         </p>
-                        {servico.endereco_piscina && (
-                          <p className="text-xs text-slate-500 mt-0.5">📍 {servico.endereco_piscina} / {servico.cidade_piscina}</p>
-                        )}
                       </div>
-                      <span className={`text-xs font-semibold px-2 py-1 rounded ${
-                        servico.status === "confirmado"
-                          ? "bg-green-100 text-green-700"
-                          : "bg-yellow-100 text-yellow-700"
-                      }`}>
-                        {servico.status ?? "pendente"}
+                      <span className="text-xs font-semibold px-2 py-1 rounded bg-red-100 text-red-700 whitespace-nowrap">
+                        {showFinancialValues ? `R$ ${cobranca.valor.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}` : "••••••"}
                       </span>
                     </div>
                   </div>

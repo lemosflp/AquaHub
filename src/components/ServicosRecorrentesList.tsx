@@ -3,11 +3,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   getServicosRecorrentes,
   updateDiaVencimentoRecorrente,
   cancelarServicoRecorrente,
+  excluirServicoRecorrente,
 } from "@/services/supabaseApi";
 import type { ServicoRecorrente } from "@/types";
 
@@ -48,8 +50,8 @@ export function ServicosRecorrentesList({ refreshKey }: { refreshKey?: number })
     }
   }
 
-  async function cancelar(id: string) {
-    if (!window.confirm("Cancelar esta série? Atendimentos e cobranças futuras serão removidos.")) return;
+  async function cancelarTodos(id: string) {
+    if (!window.confirm("Cancelar todos os atendimentos futuros desta série? As cobranças pendentes futuras serão removidas.")) return;
     setBusy(true);
     try {
       await cancelarServicoRecorrente(id);
@@ -57,6 +59,20 @@ export function ServicosRecorrentesList({ refreshKey }: { refreshKey?: number })
       await load();
     } catch (err: any) {
       toast({ title: "Erro ao cancelar", description: err.message, variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function excluir(id: string) {
+    if (!window.confirm("Excluir esta série? Essa ação não pode ser desfeita.")) return;
+    setBusy(true);
+    try {
+      await excluirServicoRecorrente(id);
+      toast({ title: "Série excluída" });
+      await load();
+    } catch (err: any) {
+      toast({ title: "Erro ao excluir", description: err.message, variant: "destructive" });
     } finally {
       setBusy(false);
     }
@@ -85,7 +101,7 @@ export function ServicosRecorrentesList({ refreshKey }: { refreshKey?: number })
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {editId === s.id ? (
                 <>
                   <Input
@@ -116,9 +132,18 @@ export function ServicosRecorrentesList({ refreshKey }: { refreshKey?: number })
                     size="sm" variant="outline"
                     className="border-red-300 text-red-700"
                     disabled={s.status !== "ativo" || busy}
-                    onClick={() => cancelar(s.id)}
+                    onClick={() => cancelarTodos(s.id)}
                   >
-                    Cancelar série
+                    Cancelar todos
+                  </Button>
+                  <Button
+                    size="sm" variant="outline"
+                    className="border-red-300 text-red-700"
+                    disabled={busy}
+                    onClick={() => excluir(s.id)}
+                  >
+                    <Trash2 size={14} className="mr-1" />
+                    Excluir
                   </Button>
                 </>
               )}

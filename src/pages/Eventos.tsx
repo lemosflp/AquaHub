@@ -15,7 +15,12 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "@/lib/supabaseClient";
 import { ServicoRecorrenteForm } from "@/components/ServicoRecorrenteForm";
 import { ServicosRecorrentesList } from "@/components/ServicosRecorrentesList";
-import { TURNO_OPTIONS, getHorarioPadraoFromHorario, getTurnoLabelFromHorario } from "@/lib/turnos";
+import { TURNO_OPTIONS, getHorarioPadraoFromHorario, getTurnoLabelFromHorario, getTurnoFromHorario } from "@/lib/turnos";
+import {
+  cancelarAtendimentoRecorrente,
+  reagendarAtendimento,
+  reagendarServicoRecorrente,
+} from "@/services/supabaseApi";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -189,6 +194,14 @@ export default function Eventos() {
   const [loadingSerie, setLoadingSerie] = useState(false);
   const [atendimentosSerie, setAtendimentosSerie] = useState<Servico[]>([]);
 
+  // --- reagendar/cancelar atendimento individual ou série ---
+  const [busyAtendimento, setBusyAtendimento] = useState(false);
+  const [reagendandoAtendimentoId, setReagendandoAtendimentoId] = useState<string | null>(null);
+  const [reagendarAtendimentoData, setReagendarAtendimentoData] = useState("");
+  const [reagendarAtendimentoTurno, setReagendarAtendimentoTurno] = useState<"manha" | "tarde" | "noite" | "">("");
+  const [reagendandoSerie, setReagendandoSerie] = useState(false);
+  const [reagendarSerieData, setReagendarSerieData] = useState("");
+
   // --- ui ---
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -263,16 +276,34 @@ export default function Eventos() {
 
     if (error) {
       toast({ title: "Erro ao carregar serviços", description: error.message, variant: "destructive" });
-      return;
+      return [];
     }
 
-    const seen = new Set<string>();
-    const groupedData = (data ?? []).filter((servico: any) => {
-      if (!servico.recorrencia_id) return true;
-      if (seen.has(servico.recorrencia_id)) return false;
-      seen.add(servico.recorrencia_id);
-      return true;
+    const avulsos = (data ?? []).filter((servico: any) => !servico.recorrencia_id);
+
+    const porRecorrencia = new Map<string, any[]>();
+    (data ?? []).forEach((servico: any) => {
+      if (!servico.recorrencia_id) return;
+      const atual = porRecorrencia.get(servico.recorrencia_id) ?? [];
+      atual.push(servico);
+      porRecorrencia.set(servico.recorrencia_id, atual);
     });
+
+    // Representa a série pelo próximo atendimento em aberto (>= hoje, não
+    // cancelado); sem nenhum futuro, cai para o mais recente da série.
+    const representantes = Array.from(porRecorrencia.values()).map((atendimentos) => {
+      const proximos = atendimentos
+        .filter((a) => a.status !== "cancelado" && (a.data_agendamento ?? "") >= hoje)
+        .sort((a, b) => (a.data_agendamento ?? "").localeCompare(b.data_agendamento ?? ""));
+      if (proximos.length > 0) return proximos[0];
+      return atendimentos
+        .slice()
+        .sort((a, b) => (b.data_agendamento ?? "").localeCompare(a.data_agendamento ?? ""))[0];
+    });
+
+    const groupedData = [...avulsos, ...representantes].sort((a, b) =>
+      (b.data_agendamento ?? "").localeCompare(a.data_agendamento ?? "")
+    );
 
     const mapped: Servico[] = groupedData.map((s: any) => ({
       ...s,
@@ -281,6 +312,7 @@ export default function Eventos() {
     }));
 
     setServicos(mapped);
+    return mapped;
   }
 
   // ---------------------------------------------------------------------------
@@ -361,17 +393,121 @@ export default function Eventos() {
   }
 
   // ---------------------------------------------------------------------------
+  // Sincroniza a UI depois que um atendimento específico muda (cancelado ou
+  // reagendado): atualiza a lista principal e, se afetar o que está aberto
+  // nos detalhes, mantém o painel coerente em vez de sumir/travar em dados
+  // velhos. Compartilhado por cancelar (1 ou pelo card principal) e reagendar.
+  // ---------------------------------------------------------------------------
+  async function sincronizarAposMudancaEmAtendimento(alvo: Servico) {
+    const atualizados = await fetchServicos();
+    if (!alvo.recorrencia_id) return;
+
+    if (selectedServicoId === alvo.id) {
+      // Trocar data/status pode mudar qual atendimento representa a série
+      // (o próximo em aberto passa a ser outro). Se o serviço aberto nos
+      // detalhes não é mais o representante, reabre no novo representante
+      // em vez de deixar o painel apontando pra um id que sumiu da lista.
+      if (atualizados.some(s => s.id === alvo.id)) {
+        fetchCobrancaDoServico(alvo);
+        fetchSerieRecorrente(alvo.recorrencia_id);
+      } else {
+        const novoRepresentante = atualizados.find(s => s.recorrencia_id === alvo.recorrencia_id);
+        if (novoRepresentante) {
+          abrirDetalhes(novoRepresentante);
+        } else {
+          setSelectedServicoId(null);
+        }
+      }
+    } else if (selectedSerie?.id === alvo.recorrencia_id) {
+      // O painel de detalhes está aberto para esta série (em outro
+      // atendimento representante) — só precisa atualizar a lista de
+      // atendimentos da série pra refletir a mudança.
+      fetchSerieRecorrente(alvo.recorrencia_id);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Cancelar serviço (só muda status, não exclui)
   // ---------------------------------------------------------------------------
   async function handleCancelarServico(id: string) {
     const { data: authData } = await supabase.auth.getUser();
     const userId = authData?.user?.id ?? null;
+    const alvo = servicos.find(x => x.id === id);
     await supabase.from("servicos").update({ status: "cancelado" }).eq("id", id).eq("user_id", userId);
-    await fetchServicos();
-    // Atualiza detalhes se o serviço estava aberto
-    const s = servicos.find(x => x.id === id);
-    if (s && selectedServicoId === id) {
-      fetchCobrancaDoServico({ ...s, status: "cancelado" });
+    if (alvo) await sincronizarAposMudancaEmAtendimento({ ...alvo, status: "cancelado" });
+    else await fetchServicos();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cancelar/reagendar um único atendimento da série (a partir da lista de
+  // "Atendimentos da série"), sem afetar os demais nem a série em si.
+  // ---------------------------------------------------------------------------
+  async function handleCancelarAtendimento(at: Servico) {
+    setBusyAtendimento(true);
+    try {
+      await cancelarAtendimentoRecorrente(at.id);
+      toast({ title: "Atendimento cancelado." });
+      await sincronizarAposMudancaEmAtendimento({ ...at, status: "cancelado" });
+    } catch (err: any) {
+      toast({ title: "Erro ao cancelar atendimento", description: err.message, variant: "destructive" });
+    } finally {
+      setBusyAtendimento(false);
+    }
+  }
+
+  function abrirReagendarAtendimento(at: Servico) {
+    setReagendandoAtendimentoId(at.id);
+    setReagendarAtendimentoData(at.data_agendamento ?? "");
+    setReagendarAtendimentoTurno(getTurnoFromHorario(at.horario) ?? "");
+  }
+
+  function fecharReagendarAtendimento() {
+    setReagendandoAtendimentoId(null);
+    setReagendarAtendimentoData("");
+    setReagendarAtendimentoTurno("");
+  }
+
+  async function salvarReagendarAtendimento(at: Servico) {
+    if (!reagendarAtendimentoData || !reagendarAtendimentoTurno) {
+      toast({ title: "Informe data e turno.", variant: "destructive" });
+      return;
+    }
+    setBusyAtendimento(true);
+    try {
+      await reagendarAtendimento(at.id, reagendarAtendimentoData, reagendarAtendimentoTurno);
+      toast({ title: "Atendimento reagendado." });
+      fecharReagendarAtendimento();
+      await sincronizarAposMudancaEmAtendimento({
+        ...at,
+        data_agendamento: reagendarAtendimentoData,
+      });
+    } catch (err: any) {
+      toast({ title: "Erro ao reagendar", description: err.message, variant: "destructive" });
+    } finally {
+      setBusyAtendimento(false);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reagendar a série inteira a partir de uma nova data de retomada.
+  // ---------------------------------------------------------------------------
+  async function salvarReagendarSerie() {
+    if (!selectedSerie || !reagendarSerieData) {
+      toast({ title: "Informe a nova data de retomada.", variant: "destructive" });
+      return;
+    }
+    setBusyAtendimento(true);
+    try {
+      await reagendarServicoRecorrente(selectedSerie.id, reagendarSerieData);
+      toast({ title: "Série reagendada." });
+      setReagendandoSerie(false);
+      setReagendarSerieData("");
+      await fetchServicos();
+      await fetchSerieRecorrente(selectedSerie.id);
+    } catch (err: any) {
+      toast({ title: "Erro ao reagendar série", description: err.message, variant: "destructive" });
+    } finally {
+      setBusyAtendimento(false);
     }
   }
 
@@ -394,21 +530,12 @@ export default function Eventos() {
 
     try {
       if (servico.recorrencia_id) {
-        // Recorrente: verifica se algum atendimento da serie ja passou
-        const { data: passados, error: passadosError } = await supabase
-          .from("servicos")
-          .select("id")
-          .eq("recorrencia_id", servico.recorrencia_id)
-          .eq("user_id", userId)
-          .lt("data_agendamento", hoje)
-          .limit(1);
-
-        if (passadosError) throw passadosError;
-
-        if (passados && passados.length > 0) {
+        // Recorrente: só bloqueia se este atendimento específico já passou
+        // (atendimentos futuros cancelados podem ser removidos livremente)
+        if ((servico.data_agendamento ?? "") < hoje) {
           toast({
             title: "Exclusao nao permitida",
-            description: "Esta serie ja possui atendimentos realizados no passado e nao pode ser excluida.",
+            description: "Este atendimento já ocorreu no passado e não pode ser excluído.",
             variant: "destructive",
           });
           return;
@@ -881,12 +1008,43 @@ export default function Eventos() {
   useEffect(() => {
     if (!effectiveViewId) return;
     if (!servicos || servicos.length === 0) return;
+
     const s = servicos.find(x => x.id === effectiveViewId);
     if (s) {
       abrirDetalhes(s);
       setShowForm(false);
       setEditingServicoId(null);
+      return;
     }
+
+    // effectiveViewId pode apontar para um atendimento de uma série
+    // recorrente que não é o representante atual (ex.: veio de um link do
+    // calendário para uma ocorrência específica). Resolve a série e abre
+    // pelo atendimento que hoje representa essa recorrência na lista.
+    let cancelado = false;
+    (async () => {
+      const { data: authData } = await supabase.auth.getUser();
+      const userId = authData?.user?.id ?? null;
+      const { data: ocorrencia } = await supabase
+        .from("servicos")
+        .select("recorrencia_id")
+        .eq("id", effectiveViewId)
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (cancelado || !ocorrencia?.recorrencia_id) return;
+
+      const representante = servicos.find(x => x.recorrencia_id === ocorrencia.recorrencia_id);
+      if (representante) {
+        abrirDetalhes(representante);
+        setShowForm(false);
+        setEditingServicoId(null);
+      }
+    })();
+
+    return () => {
+      cancelado = true;
+    };
   }, [effectiveViewId, servicos]);
 
   function handleCancelForm() {
@@ -940,9 +1098,9 @@ export default function Eventos() {
     return v.toLocaleString("pt-BR", { minimumFractionDigits: 2 });
   }
 
-  // Verifica se a série recorrente tem atendimentos passados (para bloquear exclusão)
-  function serieTemPassados(): boolean {
-    return atendimentosSerie.some(at => (at.data_agendamento ?? "") < hoje);
+  // Um atendimento recorrente só pode ser excluído se ainda não ocorreu
+  function atendimentoJaPassou(servico: Servico): boolean {
+    return (servico.data_agendamento ?? "") < hoje;
   }
 
   const totalPago = pagamentoModal?.pagamentos.reduce((s, p) => s + (p.valor_pago ?? 0), 0) ?? 0;
@@ -1027,6 +1185,7 @@ export default function Eventos() {
               recorrencia={editingRecorrencia ?? undefined}
               onCreated={() => {
                 setRecorrentesRefresh((k) => k + 1);
+                fetchServicos();
                 handleCancelForm();
               }}
             />
@@ -1403,7 +1562,7 @@ export default function Eventos() {
                     <div className="absolute inset-y-0 left-0 w-1 bg-red-500" />
                   )}
                   <CardContent className="p-4">
-                    <div className="flex items-start justify-between gap-4">
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
                       <div className="flex-1 space-y-3">
                         <div className="flex items-center gap-3 flex-wrap">
                           <h3 className={`font-bold text-lg ${isCancelado ? "text-red-900" : "text-blue-900"}`}>
@@ -1452,7 +1611,7 @@ export default function Eventos() {
                         )}
                       </div>
 
-                      <div className="flex flex-col gap-2 ml-2">
+                      <div className="flex flex-row flex-wrap gap-2 sm:flex-col sm:ml-2">
                         {/* Confirmar — só quando agendado */}
                         {servico.status === "agendado" && (
                           <Button
@@ -1664,17 +1823,55 @@ export default function Eventos() {
                         </div>
 
                         <div>
-                          <p className="text-xs font-semibold text-purple-700 mb-2 uppercase tracking-wide">
-                            Atendimentos da série ({atendimentosSerie.length} total)
-                          </p>
-                          <div className="max-h-56 overflow-y-auto pr-1 space-y-1">
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-xs font-semibold text-purple-700 uppercase tracking-wide">
+                              Atendimentos da série ({atendimentosSerie.length} total)
+                            </p>
+                            {!reagendandoSerie && (
+                              <Button
+                                type="button" size="sm" variant="outline"
+                                className="h-7 px-2 text-xs border-purple-300 text-purple-700 hover:bg-purple-50"
+                                onClick={() => { setReagendandoSerie(true); setReagendarSerieData(""); }}
+                              >
+                                Reagendar série
+                              </Button>
+                            )}
+                          </div>
+
+                          {reagendandoSerie && (
+                            <div className="flex flex-wrap items-end gap-2 mb-3 p-3 rounded-lg border border-purple-200 bg-purple-50/50">
+                              <div>
+                                <Label className="text-xs">Retomar atendimentos a partir de:</Label>
+                                <Input
+                                  type="date"
+                                  value={reagendarSerieData}
+                                  onChange={(e) => setReagendarSerieData(e.target.value)}
+                                  className="h-8 text-xs"
+                                />
+                              </div>
+                              <Button type="button" size="sm" disabled={busyAtendimento} onClick={salvarReagendarSerie} className="h-8 bg-purple-600 hover:bg-purple-700 text-white text-xs">
+                                Confirmar
+                              </Button>
+                              <Button type="button" size="sm" variant="outline" className="h-8 text-xs" onClick={() => { setReagendandoSerie(false); setReagendarSerieData(""); }}>
+                                Cancelar
+                              </Button>
+                              <p className="w-full text-[11px] text-purple-700">
+                                Remove os atendimentos futuros ainda não concluídos e gera novos a partir dessa data, mantendo dias/turno da série. Cobranças não são alteradas.
+                              </p>
+                            </div>
+                          )}
+
+                          <div className="max-h-72 overflow-y-auto pr-1 space-y-1">
                             {atendimentosSerie.map((at, idx) => {
                               const isPast = (at.data_agendamento ?? "") < hoje;
                               const isToday = at.data_agendamento === hoje;
+                              const elegivel = !isPast && at.status !== "cancelado" && at.status !== "concluido";
+                              const reagendandoEste = reagendandoAtendimentoId === at.id;
+
                               return (
                                 <div
                                   key={at.id}
-                                  className={`flex items-center gap-3 rounded px-3 py-2 text-xs border ${
+                                  className={`rounded px-3 py-2 text-xs border ${
                                     isToday
                                       ? "bg-blue-50 border-blue-300 font-semibold"
                                       : isPast
@@ -1682,18 +1879,68 @@ export default function Eventos() {
                                       : "bg-white border-purple-100"
                                   }`}
                                 >
-                                  <span className="w-5 text-right text-muted-foreground shrink-0">{idx + 1}.</span>
-                                  <span className="w-24 shrink-0">
-                                    {at.data_agendamento
-                                      ? format(parseISO(at.data_agendamento), "dd/MM/yyyy", { locale: ptBR })
-                                      : "—"}
-                                  </span>
-                                  <span className="text-slate-500 w-16 shrink-0">{getTurnoLabelFromHorario(at.horario)}</span>
-                                  <Badge className={`text-[10px] px-1.5 py-0 ${getStatusColor(at.status)}`} variant="outline">
-                                    {at.status ?? "—"}
-                                  </Badge>
-                                  {isToday && <span className="ml-auto text-blue-600 font-semibold">Hoje</span>}
-                                  {isPast && !isToday && <span className="ml-auto text-slate-400">Passado</span>}
+                                  <div className="flex items-center gap-3">
+                                    <span className="w-5 text-right text-muted-foreground shrink-0">{idx + 1}.</span>
+                                    <span className="w-24 shrink-0">
+                                      {at.data_agendamento
+                                        ? format(parseISO(at.data_agendamento), "dd/MM/yyyy", { locale: ptBR })
+                                        : "—"}
+                                    </span>
+                                    <span className="text-slate-500 w-16 shrink-0">{getTurnoLabelFromHorario(at.horario)}</span>
+                                    <Badge className={`text-[10px] px-1.5 py-0 ${getStatusColor(at.status)}`} variant="outline">
+                                      {at.status ?? "—"}
+                                    </Badge>
+                                    {isToday && <span className="text-blue-600 font-semibold">Hoje</span>}
+                                    {isPast && !isToday && <span className="text-slate-400">Passado</span>}
+                                    {elegivel && !reagendandoEste && (
+                                      <div className="ml-auto flex items-center gap-1">
+                                        <Button
+                                          type="button" size="sm" variant="ghost"
+                                          className="h-6 px-2 text-[11px] text-purple-700 hover:bg-purple-50"
+                                          disabled={busyAtendimento}
+                                          onClick={() => abrirReagendarAtendimento(at)}
+                                        >
+                                          Reagendar
+                                        </Button>
+                                        <Button
+                                          type="button" size="sm" variant="ghost"
+                                          className="h-6 px-2 text-[11px] text-orange-700 hover:bg-orange-50"
+                                          disabled={busyAtendimento}
+                                          onClick={() => handleCancelarAtendimento(at)}
+                                        >
+                                          Cancelar
+                                        </Button>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {reagendandoEste && (
+                                    <div className="mt-2 flex flex-wrap items-end gap-2">
+                                      <Input
+                                        type="date"
+                                        value={reagendarAtendimentoData}
+                                        onChange={(e) => setReagendarAtendimentoData(e.target.value)}
+                                        className="h-8 w-36 text-xs"
+                                      />
+                                      <Select
+                                        value={reagendarAtendimentoTurno}
+                                        onValueChange={(v) => setReagendarAtendimentoTurno(v as "manha" | "tarde" | "noite")}
+                                      >
+                                        <SelectTrigger className="h-8 w-28 text-xs"><SelectValue placeholder="Turno" /></SelectTrigger>
+                                        <SelectContent>
+                                          {TURNO_OPTIONS.map((option) => (
+                                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                      <Button type="button" size="sm" disabled={busyAtendimento} onClick={() => salvarReagendarAtendimento(at)} className="h-8 bg-purple-600 hover:bg-purple-700 text-white text-xs">
+                                        Salvar
+                                      </Button>
+                                      <Button type="button" size="sm" variant="outline" className="h-8 text-xs" onClick={fecharReagendarAtendimento}>
+                                        Cancelar
+                                      </Button>
+                                    </div>
+                                  )}
                                 </div>
                               );
                             })}
@@ -1785,8 +2032,8 @@ export default function Eventos() {
                   {/* Excluir — apenas cancelado + regras de recorrente */}
                   {selectedServico.status === "cancelado" && (
                     <>
-                      {selectedServico.recorrencia_id && serieTemPassados() ? (
-                        <Button type="button" disabled className="opacity-40 cursor-not-allowed bg-red-100 text-red-400 border border-red-200" title="Série com atendimentos passados não pode ser excluída">
+                      {selectedServico.recorrencia_id && atendimentoJaPassou(selectedServico) ? (
+                        <Button type="button" disabled className="opacity-40 cursor-not-allowed bg-red-100 text-red-400 border border-red-200" title="Este atendimento já ocorreu no passado e não pode ser excluído">
                           <Trash2 size={16} className="mr-1" />
                           Excluir
                         </Button>
