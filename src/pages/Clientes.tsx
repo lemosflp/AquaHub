@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Search, Plus, Edit, Users } from "lucide-react";
+import { Search, Plus, Edit, Users, Trash2 } from "lucide-react";
 import { useAppContext } from "@/contexts/AppContext";
 import { Cliente } from "@/types";
 import { format, parseISO } from "date-fns";
@@ -14,8 +14,9 @@ import { useToast } from "@/hooks/use-toast";
 import { getClientesApi } from "@/services/supabaseApi";
 
 export default function Clientes() {
-  const { clientes, addCliente, updateCliente, refreshClientes } = useAppContext() as any;
+  const { clientes, addCliente, updateCliente, removeCliente, refreshClientes } = useAppContext() as any;
   const [editingClienteId, setEditingClienteId] = useState<string | null>(null);
+  const [deletingCliente, setDeletingCliente] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [formData, setFormData] = useState<any>({
@@ -64,6 +65,28 @@ export default function Clientes() {
   const handleBackFromView = () => {
     setSelectedCliente(null);
     setViewMode('list');
+  };
+
+  const handleDeleteCliente = async () => {
+    if (!selectedCliente) return;
+    const nomeCompleto = `${selectedCliente.nome} ${selectedCliente.sobrenome}`;
+    if (
+      !window.confirm(
+        `Excluir o cliente ${nomeCompleto}? Isso também apaga piscinas, histórico de serviços e cobranças já pagas deste cliente. Essa ação não pode ser desfeita.`
+      )
+    )
+      return;
+
+    setDeletingCliente(true);
+    try {
+      await removeCliente(selectedCliente.id as string);
+      toast({ title: "Cliente excluído." });
+      handleBackFromView();
+    } catch (err: any) {
+      toast({ title: "Erro ao excluir cliente", description: err.message, variant: "destructive" });
+    } finally {
+      setDeletingCliente(false);
+    }
   };
 
   const handleEditFromView = () => {
@@ -662,13 +685,22 @@ export default function Clientes() {
               </div>
 
               {/* Ações */}
-              <div className="mt-4 flex gap-2 justify-end">
-                 <Button onClick={handleBackFromView} variant="outline" className="px-4">
+              <div className="mt-4 flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
+                 <Button onClick={handleBackFromView} variant="outline" className="w-full sm:w-auto px-4">
                    Voltar
                  </Button>
                  <Button
+                   onClick={handleDeleteCliente}
+                   disabled={deletingCliente}
+                   variant="outline"
+                   className="w-full sm:w-auto px-4 border-red-300 text-red-700 hover:bg-red-50"
+                 >
+                   <Trash2 size={16} className="mr-2" />
+                   {deletingCliente ? "Excluindo..." : "Excluir cliente"}
+                 </Button>
+                 <Button
                    onClick={handleEditFromView}
-                   className="bg-primary hover:bg-primary-hover text-primary-foreground px-4"
+                   className="w-full sm:w-auto bg-primary hover:bg-primary-hover text-primary-foreground px-4"
                  >
                    Editar cadastro
                  </Button>

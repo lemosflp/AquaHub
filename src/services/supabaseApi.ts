@@ -8,6 +8,7 @@ import {
   toISODate,
 } from "@/lib/recorrencia";
 import type { Cliente, Evento, ServicoRecorrente } from "@/types";
+import { TURNO_HORARIOS } from "@/lib/turnos";
 
 // helpers de auth seguros
 async function getCurrentUserId() {
@@ -384,6 +385,83 @@ export async function updateClienteApi(
     console.error("updateClienteApi - erro de autenticação:", err);
     return null;
   }
+}
+
+/**
+ * Exclui um cliente. Bloqueia a exclusão se houver serviço ativo (agendado
+ * ou confirmado), série recorrente ativa, ou cobrança em aberto (pendente
+ * ou parcial) — ou seja, qualquer pendência financeira/operacional. Sem
+ * pendências, o histórico encerrado (serviços concluídos/cancelados,
+ * cobranças pagas, séries canceladas, piscinas) é removido junto do
+ * cliente, já que ele deixaria de existir de qualquer forma.
+ */
+export async function deleteClienteApi(clienteId: string): Promise<void> {
+  const userId = await getCurrentUserId();
+
+  const [servicosResult, recorrentesResult, cobrancasResult] = await Promise.all([
+    supabase.from("servicos").select("id, status").eq("client_id", clienteId).eq("user_id", userId),
+    supabase.from("servicos_recorrentes").select("id, status").eq("client_id", clienteId).eq("user_id", userId),
+    supabase.from("cobrancas").select("id, status").eq("client_id", clienteId).eq("user_id", userId),
+  ]);
+
+  for (const result of [servicosResult, recorrentesResult, cobrancasResult]) {
+    if (result.error) throw result.error;
+  }
+
+  const temServicoAtivo = (servicosResult.data ?? []).some(
+    (s: any) => s.status === "agendado" || s.status === "confirmado"
+  );
+  const temRecorrenciaAtiva = (recorrentesResult.data ?? []).some((r: any) => r.status === "ativo");
+  const temCobrancaEmAberto = (cobrancasResult.data ?? []).some(
+    (c: any) => c.status === "pendente" || c.status === "parcial"
+  );
+
+  if (temServicoAtivo || temRecorrenciaAtiva || temCobrancaEmAberto) {
+    throw new Error(
+      "Este cliente possui serviços ativos ou cobranças em aberto e não pode ser excluído. Cancele os serviços e quite as cobranças pendentes primeiro."
+    );
+  }
+
+  const cobrancaIds = (cobrancasResult.data ?? []).map((c: any) => c.id);
+  if (cobrancaIds.length > 0) {
+    const { error: pagamentosError } = await supabase
+      .from("pagamentos")
+      .delete()
+      .in("cobranca_id", cobrancaIds)
+      .eq("user_id", userId);
+    if (pagamentosError) throw pagamentosError;
+  }
+
+  const { error: cobrancasError } = await supabase
+    .from("cobrancas")
+    .delete()
+    .eq("client_id", clienteId)
+    .eq("user_id", userId);
+  if (cobrancasError) throw cobrancasError;
+
+  const { error: servicosError } = await supabase
+    .from("servicos")
+    .delete()
+    .eq("client_id", clienteId)
+    .eq("user_id", userId);
+  if (servicosError) throw servicosError;
+
+  const { error: recorrentesError } = await supabase
+    .from("servicos_recorrentes")
+    .delete()
+    .eq("client_id", clienteId)
+    .eq("user_id", userId);
+  if (recorrentesError) throw recorrentesError;
+
+  const { error: piscinasError } = await supabase
+    .from("piscinas")
+    .delete()
+    .eq("client_id", clienteId)
+    .eq("user_id", userId);
+  if (piscinasError) throw piscinasError;
+
+  const { error } = await supabase.from("clientes").delete().eq("id", clienteId).eq("user_id", userId);
+  if (error) throw error;
 }
 
 // --- Serviços / Pagamentos (novo fluxo para /Eventos página que agora será Serviços) ---
@@ -1265,8 +1343,11 @@ export async function updateDiaVencimentoRecorrente(
 }
 
 /**
- * Cancela a série: status 'cancelado', remove atendimentos futuros não
- * concluídos e cobranças futuras pendentes. Preserva passado e pagamentos.
+ * Cancela a série inteira: status 'cancelado', marca os atendimentos
+ * futuros não concluídos como cancelados (sem apagar, para permitir
+ * excluí-los depois via excluirServicoRecorrente) e remove cobranças
+ * futuras pendentes (cobrança não tem status 'cancelado'). Preserva
+ * passado, atendimentos concluídos e pagamentos.
  */
 export async function cancelarServicoRecorrente(recorrenciaId: string) {
   const userId = await getCurrentUserId();
@@ -1281,11 +1362,12 @@ export async function cancelarServicoRecorrente(recorrenciaId: string) {
 
   const { error: servError } = await supabase
     .from("servicos")
-    .delete()
+    .update({ status: "cancelado" })
     .eq("recorrencia_id", recorrenciaId)
     .eq("user_id", userId)
     .gte("data_agendamento", hojeISO)
-    .neq("status", "concluido");
+    .neq("status", "concluido")
+    .neq("status", "cancelado");
   if (servError) throw servError;
 
   const { error: cobrError } = await supabase
@@ -1296,6 +1378,158 @@ export async function cancelarServicoRecorrente(recorrenciaId: string) {
     .gte("data_vencimento", hojeISO)
     .eq("status", "pendente");
   if (cobrError) throw cobrError;
+}
+
+/**
+ * Cancela um único atendimento da série (não mexe na série nem em outras
+ * ocorrências, e não mexe em cobranças — a mensalidade continua valendo).
+ */
+export async function cancelarAtendimentoRecorrente(servicoId: string) {
+  const userId = await getCurrentUserId();
+  const { error } = await supabase
+    .from("servicos")
+    .update({ status: "cancelado" })
+    .eq("id", servicoId)
+    .eq("user_id", userId);
+  if (error) throw error;
+}
+
+/**
+ * Move um único atendimento da série para outra data/turno. Não afeta
+ * cobranças nem outras ocorrências.
+ */
+export async function reagendarAtendimento(
+  servicoId: string,
+  novaData: string,
+  novoTurno: "manha" | "tarde" | "noite"
+) {
+  const userId = await getCurrentUserId();
+  const { error } = await supabase
+    .from("servicos")
+    .update({ data_agendamento: novaData, horario: TURNO_HORARIOS[novoTurno] })
+    .eq("id", servicoId)
+    .eq("user_id", userId);
+  if (error) throw error;
+}
+
+/**
+ * Adia a série a partir de uma nova data de retomada: remove os
+ * atendimentos futuros ainda não concluídos (agendados, confirmados ou já
+ * cancelados) e regenera o restante entre a nova data e o data_fim
+ * original da série, com o mesmo padrão de dias/turno. Cobranças não são
+ * alteradas.
+ */
+export async function reagendarServicoRecorrente(recorrenciaId: string, novaDataRetomada: string) {
+  const userId = await getCurrentUserId();
+  const hojeISO = toISODate(new Date());
+
+  if (novaDataRetomada < hojeISO) {
+    throw new Error("A nova data de retomada não pode ser no passado.");
+  }
+
+  const { data: serie, error: serieFetchError } = await supabase
+    .from("servicos_recorrentes")
+    .select("id, client_id, piscina_id, tipo_servico, dias_semana, turno, horario, data_fim")
+    .eq("id", recorrenciaId)
+    .eq("user_id", userId)
+    .single();
+  if (serieFetchError || !serie) {
+    throw serieFetchError ?? new Error("Série recorrente não encontrada");
+  }
+
+  const dataFimDate = parseISO(serie.data_fim);
+  const novaDataDate = parseISO(novaDataRetomada);
+  if (novaDataDate > dataFimDate) {
+    throw new Error("A nova data de retomada é depois do fim da série.");
+  }
+
+  const { error: delError } = await supabase
+    .from("servicos")
+    .delete()
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId)
+    .gte("data_agendamento", hojeISO)
+    .neq("status", "concluido");
+  if (delError) throw delError;
+
+  const ocorrencias = gerarOcorrencias(novaDataDate, dataFimDate, serie.dias_semana);
+  if (ocorrencias.length > 0) {
+    const servicosRows = ocorrencias.map((d) => ({
+      user_id: userId,
+      client_id: serie.client_id,
+      piscina_id: serie.piscina_id,
+      tipo_servico: serie.tipo_servico,
+      data_agendamento: toISODate(d),
+      horario: serie.horario,
+      status: "agendado",
+      recorrencia_id: recorrenciaId,
+    }));
+    const { error: insError } = await supabase.from("servicos").insert(servicosRows);
+    if (insError) throw insError;
+  }
+}
+
+/**
+ * Exclui a série inteira (e seus atendimentos/cobranças/pagamentos).
+ * Bloqueia se houver atendimento ativo (agendado/confirmado) ou já
+ * concluído (histórico real de serviço prestado), ou cobrança em aberto
+ * (pendente/parcial) — mesma regra usada em deleteClienteApi.
+ */
+export async function excluirServicoRecorrente(recorrenciaId: string): Promise<void> {
+  const userId = await getCurrentUserId();
+
+  const [servicosResult, cobrancasResult] = await Promise.all([
+    supabase.from("servicos").select("id, status").eq("recorrencia_id", recorrenciaId).eq("user_id", userId),
+    supabase.from("cobrancas").select("id, status").eq("recorrencia_id", recorrenciaId).eq("user_id", userId),
+  ]);
+
+  for (const result of [servicosResult, cobrancasResult]) {
+    if (result.error) throw result.error;
+  }
+
+  const temAtivoOuConcluido = (servicosResult.data ?? []).some(
+    (s: any) => s.status === "agendado" || s.status === "confirmado" || s.status === "concluido"
+  );
+  const temCobrancaEmAberto = (cobrancasResult.data ?? []).some(
+    (c: any) => c.status === "pendente" || c.status === "parcial"
+  );
+
+  if (temAtivoOuConcluido || temCobrancaEmAberto) {
+    throw new Error(
+      "Só é possível excluir a série quando todos os atendimentos estiverem cancelados e não houver cobrança em aberto."
+    );
+  }
+
+  const cobrancaIds = (cobrancasResult.data ?? []).map((c: any) => c.id);
+  if (cobrancaIds.length > 0) {
+    const { error: pagamentosError } = await supabase
+      .from("pagamentos")
+      .delete()
+      .in("cobranca_id", cobrancaIds)
+      .eq("user_id", userId);
+    if (pagamentosError) throw pagamentosError;
+  }
+
+  const { error: cobrancasError } = await supabase
+    .from("cobrancas")
+    .delete()
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId);
+  if (cobrancasError) throw cobrancasError;
+
+  const { error: servicosError } = await supabase
+    .from("servicos")
+    .delete()
+    .eq("recorrencia_id", recorrenciaId)
+    .eq("user_id", userId);
+  if (servicosError) throw servicosError;
+
+  const { error: serieError } = await supabase
+    .from("servicos_recorrentes")
+    .delete()
+    .eq("id", recorrenciaId)
+    .eq("user_id", userId);
+  if (serieError) throw serieError;
 }
 
 // ===========================================================================
